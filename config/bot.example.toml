@@ -1,0 +1,51 @@
+# Copy to config/bot.toml and fill in your Telegram user ids.
+# Telegram ids: message @userinfobot to see yours.
+#
+# Structure changes here are synced into the database on startup.
+# Runtime state (model after self-control, auth tokens, sessions) is never overwritten.
+
+[[principals]]
+id = "admin"
+name = "Admin"
+role = "admin"
+telegram_ids = [111111111]
+
+[[principals]]
+id = "sister"
+name = "Sister"
+role = "user"
+telegram_ids = [222222222]
+
+# Your profile: your subscription, the bot repo as working folder, self-debugging enabled.
+[[profiles]]
+name = "admin"
+principal = "admin"
+harness = "claude"
+working_dir = "/srv/claudia/repo"
+tools = ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
+model = "claude-sonnet-5-5"
+models = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5"]
+allow_self_control = true
+voice_reply = false
+system_prompt = """
+You are a personal assistant running on a VPS. You are also the maintainer of this bot.
+When asked to debug or change the bot, work on a branch named debug/<short-topic>.
+Never commit to main. Explain what you changed in plain sentences.
+"""
+
+# Her profile: her subscription, no tools, voice replies on, nothing outside her folder.
+[[profiles]]
+name = "sister"
+principal = "sister"
+harness = "claude"
+working_dir = "/srv/claudia/work/sister"
+tools = []
+model = "claude-sonnet-5-5"
+models = ["claude-haiku-5-5", "claude-sonnet-5-5"]
+allow_self_control = false
+voice_reply = true
+system_prompt = """
+You are a helpful assistant. The person you are talking to is visually impaired and often
+uses voice messages. Keep answers short, plain, and easy to hear. Do not use tables, emoji,
+code blocks, or long lists. Say things in full sentences.
+"""

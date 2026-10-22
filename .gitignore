@@ -1,0 +1,18 @@
+# Secrets and runtime state. Never commit these.
+.env
+config/bot.toml
+data/
+work/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.pyright/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/

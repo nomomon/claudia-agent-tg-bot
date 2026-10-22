@@ -1,0 +1,10 @@
+# Replace with your domain. Caddy fetches the TLS certificate automatically.
+claudia.example.com {
+    handle /telegram/webhook {
+        reverse_proxy bot:8000
+    }
+    handle /health {
+        reverse_proxy bot:8000
+    }
+    respond 404
+}

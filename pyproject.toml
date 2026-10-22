@@ -1,0 +1,43 @@
+[project]
+name = "claudia-workspace"
+version = "0.1.0"
+description = "Personal agent bot: Telegram in, Claude Code harness out"
+requires-python = ">=3.12"
+dependencies = [
+    "claudia-bot",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+    "pyright>=1.1.390",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/*", "packages/*"]
+
+[tool.uv.sources]
+claudia-bot = { workspace = true }
+claudia-core = { workspace = true }
+claudia-harness = { workspace = true }
+claudia-harness-claude = { workspace = true }
+claudia-store = { workspace = true }
+claudia-channels = { workspace = true }
+claudia-telegram = { workspace = true }
+claudia-media = { workspace = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]

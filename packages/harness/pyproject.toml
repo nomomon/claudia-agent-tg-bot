@@ -1,0 +1,16 @@
+[project]
+name = "claudia-harness"
+version = "0.1.0"
+description = "Port for agent harnesses (Claude Code, Codex, ...). Depends only on core."
+requires-python = ">=3.12"
+dependencies = ["claudia-core"]
+
+[tool.uv.sources]
+claudia-core = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claudia_harness"]
