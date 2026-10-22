@@ -74,8 +74,12 @@ uv run claudia webhook info     # check url and last error
 Same setup as the rat bot: Dokploy builds `docker-compose.yml` from this repo.
 
 1. In Dokploy, create a Docker Compose app pointing at this repo and branch.
-2. Set the environment variables from `.env.example`. For `BOT_CONFIG_TOML`, paste the full
-   contents of your filled-in `config/bot.toml`. That file stays out of git.
+2. Set the environment variables from `.env.example`. For `BOT_CONFIG_TOML` on the first deploy,
+   paste the full contents of your filled-in `config/bot.toml`. That file stays out of git.
+   The bot saves it as `/data/bot.toml` in the data volume and reads that copy from then on.
+   To change the config later, edit `/data/bot.toml` inside the volume, then restart. To
+   overwrite it from the env value again, set `BOT_CONFIG_RESEED=true` for one deploy.
+   The startup log shows which source was used and how many lines it read.
 3. Add a domain in Dokploy for the `bot` service, on container port `8000`. Dokploy issues TLS.
    Set `PUBLIC_BASE_URL` to that domain.
 4. Deploy. Then register the webhook from a shell in the container:

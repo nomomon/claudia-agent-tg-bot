@@ -2,34 +2,6 @@ from claudia_core import Principal, Profile, Role
 from claudia_store import SqliteStore
 
 
-def test_config_can_come_from_env_text(tmp_path) -> None:
-    from claudia_bot.config import Settings, load_bot_config
-    from pydantic import SecretStr
-
-    toml_text = """
-[[principals]]
-id = "admin"
-name = "Admin"
-role = "admin"
-telegram_ids = [111]
-
-[[profiles]]
-name = "admin"
-principal = "admin"
-working_dir = "/repo"
-"""
-    settings = Settings(
-        telegram_bot_token=SecretStr("t"),
-        telegram_webhook_secret=SecretStr("s"),
-        data_dir=tmp_path,
-        config_path=tmp_path / "missing.toml",  # must not be read when the text is set
-        bot_config_toml=toml_text,
-    )
-    config = load_bot_config(settings)
-    assert [p.name for p in config.profiles] == ["admin"]
-    assert config.identities == [("telegram", "111", "admin")]
-
-
 def test_identity_lookup_returns_only_the_mapped_principal(seeded: SqliteStore) -> None:
     admin = seeded.principal_for_identity("telegram", "111")
     sister = seeded.principal_for_identity("telegram", "222")

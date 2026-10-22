@@ -43,7 +43,10 @@ def cmd_auth_claude(args: argparse.Namespace) -> int:
     try:
         profile = store.load_profile(args.profile)
     except KeyError:
-        print(f"No profile named '{args.profile}' in {settings.config_path}.", file=sys.stderr)
+        print(
+            f"No profile named '{args.profile}' in {settings.editable_config_path}.",
+            file=sys.stderr,
+        )
         return 1
 
     config_dir = settings.claude_config_root / profile.name

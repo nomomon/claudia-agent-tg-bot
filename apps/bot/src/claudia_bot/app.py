@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,6 +11,9 @@ from claudia_bot.container import build_container
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     settings = settings or Settings()  # type: ignore[call-arg]  # values come from env / .env
     container = build_container(settings)
 
