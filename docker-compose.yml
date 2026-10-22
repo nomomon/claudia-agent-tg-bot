@@ -10,7 +10,7 @@ services:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?set in Dokploy}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in Dokploy}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      BOT_CONFIG_TOML: ${BOT_CONFIG_TOML:?paste config/bot.example.toml filled in}
+      BOT_CONFIG_TOML: ${BOT_CONFIG_TOML:?paste the contents of your filled-in config/bot.toml}
       DATA_DIR: /data
     volumes:
       - claudia_data:/data
