@@ -6,8 +6,10 @@ import argparse
 import asyncio
 import getpass
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from aiogram import Bot
 
@@ -32,6 +34,23 @@ def cmd_serve(_: argparse.Namespace) -> int:
     return 0
 
 
+def _claude_binary() -> str:
+    """The `claude` on PATH, or the copy the Agent SDK ships inside its package.
+
+    The bot's chat harness always uses the bundled copy, so logging in with the same one
+    keeps the token format and CLI version consistent.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    import claude_agent_sdk
+
+    bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+    if bundled.exists():
+        return str(bundled)
+    raise SystemExit("Claude CLI not found on PATH or in claude_agent_sdk.")
+
+
 def cmd_auth_claude(args: argparse.Namespace) -> int:
     """Run `claude setup-token` for one profile and store the token against it.
 
@@ -54,7 +73,7 @@ def cmd_auth_claude(args: argparse.Namespace) -> int:
     env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
 
     print(f"Log in as the owner of the '{profile.name}' subscription. Follow the prompts.\n")
-    subprocess.run(["claude", "setup-token"], env=env, check=False)
+    subprocess.run([_claude_binary(), "setup-token"], env=env, check=False)
 
     token = getpass.getpass("Paste the token printed above (input hidden): ").strip()
     if not token:
