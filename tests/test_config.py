@@ -63,10 +63,12 @@ def test_missing_config_gives_a_clear_error(tmp_path: Path) -> None:
         load_bot_config(_settings(tmp_path))
 
 
-def test_empty_env_values_are_treated_as_unset(tmp_path: Path, monkeypatch) -> None:
+def test_empty_env_values_are_treated_as_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("BOT_CONFIG_RESEED", "")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "s")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BOT_CONFIG_TOML", "")
-    assert Settings(_env_file=None).bot_config_reseed is False
+    assert Settings(_env_file=None).bot_config_reseed is False  # type: ignore[call-arg]
