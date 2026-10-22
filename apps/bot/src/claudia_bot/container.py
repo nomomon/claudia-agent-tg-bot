@@ -27,7 +27,7 @@ class Container:
 
 def open_store(settings: Settings) -> tuple[SqliteStore, BotConfig]:
     """Open the database and make it match bot.toml. Used by the server and the CLI."""
-    config = load_bot_config(settings.config_path)
+    config = load_bot_config(settings)
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = SqliteStore(settings.database_path)
     store.sync_config(

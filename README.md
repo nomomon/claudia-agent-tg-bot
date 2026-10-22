@@ -69,16 +69,22 @@ uv run claudia webhook set      # registers PUBLIC_BASE_URL + webhook path with 
 uv run claudia webhook info     # check url and last error
 ```
 
-## Deploying on a VPS
+## Deploying with Dokploy
 
-1. Install Docker and clone the repo to `/srv/claudia/repo`.
-2. Create `.env`, `config/bot.toml`, and `deploy/Caddyfile` (set your domain).
-3. `docker compose up -d --build`
-4. Connect each profile, as above. Run the `docker compose exec bot claudia auth claude --profile <name>` form.
-5. `docker compose exec bot claudia webhook set`
+Same setup as the rat bot: Dokploy builds `docker-compose.yml` from this repo.
 
-Persistent data lives in `./data` (database, Claude config dirs) and `./work` (per-person
-working folders). Back up `./data`.
+1. In Dokploy, create a Docker Compose app pointing at this repo and branch.
+2. Set the environment variables from `.env.example`. For `BOT_CONFIG_TOML`, paste the full
+   contents of your filled-in `config/bot.toml`. That file stays out of git.
+3. Add a domain in Dokploy for the `bot` service, on container port `8000`. Dokploy issues TLS.
+   Set `PUBLIC_BASE_URL` to that domain.
+4. Deploy. Then register the webhook from a shell in the container:
+   `claudia webhook set`
+5. Connect each profile's Claude login from the same shell:
+   `claudia auth claude --profile admin`, and the same for `sister` (she runs it, or you do it with her).
+
+Data lives in the `claudia_data` volume (database and Claude config dirs). Per-person folders
+live in `claudia_work`. Back up `claudia_data`.
 
 ## Known limits (MVP)
 
@@ -86,6 +92,7 @@ working folders). Back up `./data`.
   policy.
 - The `admin` profile can read the bot's `.env` and database, because its working folder is the
   repo. That is fine for you as the only admin, but do not give other people admin.
+- On Dokploy the admin profile's working folder is the Dokploy checkout of this repo.
 - The Claude subprocess runs in the same container as the bot. The env is scrubbed, but the
   bot's files are still on disk. A stronger split (separate user or container per profile) is
   the next step if more people join.

@@ -1,33 +1,25 @@
+# Deployed with Dokploy. Dokploy routes the domain to `bot:8000` and handles TLS,
+# so no reverse proxy is defined here. Set the variables below in Dokploy's
+# environment settings (see .env.example).
 services:
   bot:
     build: .
     restart: unless-stopped
-    env_file: .env
     environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set in Dokploy}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?set in Dokploy}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in Dokploy}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      BOT_CONFIG_TOML: ${BOT_CONFIG_TOML:?paste config/bot.example.toml filled in}
       DATA_DIR: /data
-      CONFIG_PATH: /app/config/bot.toml
     volumes:
-      - ./data:/data
-      - ./config/bot.toml:/app/config/bot.toml:ro
-      # Your working copy of this repo, so the admin profile can debug the bot.
+      - claudia_data:/data
+      - claudia_work:/srv/claudia/work
+      # Checkout of this repo, so the admin profile can debug the bot.
       - ./:/srv/claudia/repo
-      - ./work:/srv/claudia/work
     expose:
       - "8000"
 
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    depends_on:
-      - bot
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-
 volumes:
-  caddy_data:
-  caddy_config:
+  claudia_data: {}
+  claudia_work: {}

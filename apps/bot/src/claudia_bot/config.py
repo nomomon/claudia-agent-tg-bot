@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from claudia_core import Principal, Profile, Role
 from pydantic import SecretStr
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
 
     data_dir: Path = Path("data")
+    # Full bot.toml content. Set this on hosts where the file is not in the repo (Dokploy).
+    # When empty, config_path is read from disk instead.
+    bot_config_toml: str | None = None
     config_path: Path = Path("config/bot.toml")
     host: str = "0.0.0.0"
     port: int = 8000
@@ -54,9 +58,13 @@ class BotConfig:
     identities: list[tuple[str, str, str]] = field(default_factory=list)
 
 
-def load_bot_config(path: Path) -> BotConfig:
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+def load_bot_config(settings: Settings) -> BotConfig:
+    if settings.bot_config_toml:
+        return parse_bot_config(tomllib.loads(settings.bot_config_toml))
+    return parse_bot_config(tomllib.loads(settings.config_path.read_text(encoding="utf-8")))
 
+
+def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
     principals: list[PrincipalConfig] = []
     identities: list[tuple[str, str, str]] = []
     for entry in raw.get("principals", []):
