@@ -29,7 +29,7 @@ class ConfigError(Exception):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     telegram_bot_token: SecretStr
     telegram_webhook_secret: SecretStr
