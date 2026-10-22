@@ -1,5 +1,5 @@
 from claudia_channels import Orchestrator
-from claudia_core import Attachment, InboundMessage
+from claudia_core import Attachment, InboundMessage, Principal, Role
 from claudia_harness import HarnessRegistry
 from claudia_store import SqliteStore
 
@@ -110,3 +110,21 @@ async def test_image_only_message_is_passed_as_images(seeded: SqliteStore) -> No
 
     turn = harness.calls[0].turn
     assert len(turn.images) == 1 and turn.images[0].mime_type == "image/jpeg"
+
+
+async def test_ping_answers_pong_without_the_agent(seeded: SqliteStore) -> None:
+    harness, sink = FakeHarness(), FakeSink()
+    await _orchestrator(seeded, harness).handle(_text("222", "/ping"), sink)
+    assert [m.text for m in sink.sent] == ["pong"]
+    assert harness.calls == []
+
+
+async def test_ping_works_for_a_family_member_without_a_profile(seeded: SqliteStore) -> None:
+    seeded.sync_config(
+        principals=[Principal(id="family", name="Family", role=Role.USER)],
+        identities=[("telegram", "333", "family")],
+        profiles=[],
+    )
+    sink = FakeSink()
+    await _orchestrator(seeded, FakeHarness()).handle(_text("333", "/ping"), sink)
+    assert [m.text for m in sink.sent] == ["pong"]

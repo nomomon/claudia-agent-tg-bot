@@ -45,6 +45,12 @@ class Orchestrator:
             log.info("ignored message from unknown %s sender", msg.channel)
             return
 
+        # Liveness check. Answered before any profile or agent work, so it tells you the
+        # bot is up even when a profile or harness is broken.
+        if msg.text and parse_command(msg.text, from_voice=False) is Command.PING:
+            await self._send_text(sink, "pong")
+            return
+
         async with self._locks[principal.id]:
             profile = self._repo.profile_for_principal(principal.id)
             if profile is None:

@@ -25,9 +25,10 @@ _VOICE_PATTERN = re.compile(
 class Command(Enum):
     NEW_SESSION = "new_session"
     STATUS = "status"
+    PING = "ping"
 
 
-_TYPED = {"/new": Command.NEW_SESSION, "/status": Command.STATUS}
+_TYPED = {"/new": Command.NEW_SESSION, "/status": Command.STATUS, "/ping": Command.PING}
 
 
 def parse_command(text: str, *, from_voice: bool) -> Command | None:
