@@ -44,6 +44,7 @@ def seeded(store: SqliteStore) -> SqliteStore:
                 model="claude-sonnet-5-5",
                 models=("claude-haiku-5-5", "claude-sonnet-5-5"),
                 voice_reply=True,
+                language="ru",
             ),
         ],
     )

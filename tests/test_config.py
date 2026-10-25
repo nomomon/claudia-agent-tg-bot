@@ -72,3 +72,10 @@ def test_empty_env_values_are_treated_as_unset(
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BOT_CONFIG_TOML", "")
     assert Settings(_env_file=None).bot_config_reseed is False  # type: ignore[call-arg]
+
+
+def test_unknown_profile_language_is_rejected(tmp_path: Path) -> None:
+    bad = TOML + 'language = "de"\n'
+    settings = _settings(tmp_path, bot_config_toml=bad)
+    with pytest.raises(ConfigError, match="expected one of en, ru"):
+        load_bot_config(settings)

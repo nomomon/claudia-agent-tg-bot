@@ -45,6 +45,9 @@ MIGRATIONS: tuple[str, ...] = (
     );
     CREATE INDEX sessions_active ON sessions(profile_name, status);
     """,
+    """
+    ALTER TABLE profiles ADD COLUMN language TEXT NOT NULL DEFAULT 'en';
+    """,
 )
 
 
@@ -101,8 +104,8 @@ class SqliteStore:
                 self._conn.execute(
                     """
                     INSERT INTO profiles (name, principal_id, harness, working_dir, tools,
-                        model, models, allow_self_control, voice_reply, system_prompt)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        model, models, allow_self_control, voice_reply, system_prompt, language)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         principal_id = excluded.principal_id,
                         harness = excluded.harness,
@@ -111,7 +114,8 @@ class SqliteStore:
                         models = excluded.models,
                         allow_self_control = excluded.allow_self_control,
                         voice_reply = excluded.voice_reply,
-                        system_prompt = excluded.system_prompt
+                        system_prompt = excluded.system_prompt,
+                        language = excluded.language
                     """,
                     (
                         pr.name,
@@ -124,6 +128,7 @@ class SqliteStore:
                         int(pr.allow_self_control),
                         int(pr.voice_reply),
                         pr.system_prompt,
+                        pr.language,
                     ),
                 )
             self._conn.execute("COMMIT")
@@ -243,6 +248,7 @@ def _profile(row: sqlite3.Row) -> Profile:
         allow_self_control=bool(row["allow_self_control"]),
         voice_reply=bool(row["voice_reply"]),
         system_prompt=row["system_prompt"],
+        language=row["language"],
         auth_token=row["auth_token"],
     )
 

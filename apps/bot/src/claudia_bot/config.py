@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from claudia_channels.messages import SUPPORTED_LANGUAGES
 from claudia_core import Principal, Profile, Role
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -121,6 +122,16 @@ def load_bot_config(settings: Settings) -> BotConfig:
     return config
 
 
+def _language(entry: dict[str, Any]) -> str:
+    language = entry.get("language", "en")
+    if language not in SUPPORTED_LANGUAGES:
+        raise ConfigError(
+            f"profile '{entry['name']}' has language '{language}', "
+            f"expected one of {', '.join(SUPPORTED_LANGUAGES)}"
+        )
+    return language
+
+
 def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
     principals: list[PrincipalConfig] = []
     identities: list[tuple[str, str, str]] = []
@@ -148,6 +159,7 @@ def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
                 allow_self_control=bool(entry.get("allow_self_control", False)),
                 voice_reply=bool(entry.get("voice_reply", False)),
                 system_prompt=entry.get("system_prompt"),
+                language=_language(entry),
             )
         )
 

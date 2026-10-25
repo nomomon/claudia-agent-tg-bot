@@ -105,6 +105,17 @@ async def _single_prompt(text: str, turn: Turn) -> AsyncIterator[dict[str, Any]]
     }
 
 
+def _error_key(status: int | None) -> str:
+    """Map an Anthropic API status to a message key. Anything unknown is a generic failure."""
+    if status == 401:
+        return "claude_login_invalid"
+    if status == 429:
+        return "claude_rate_limited"
+    if status is not None and status >= 500:
+        return "claude_overloaded"
+    return "claude_failed"
+
+
 class ClaudeCodeHarness:
     kind = "claude"
 
@@ -121,7 +132,7 @@ class ClaudeCodeHarness:
         editor: ProfileEditor,
     ) -> TurnResult:
         if not profile.auth_token:
-            raise HarnessError("This profile is not connected to Claude yet.")
+            raise HarnessError("not_connected")
 
         control = make_control_server(profile, editor) if profile.allow_self_control else None
         options = build_options(
@@ -155,13 +166,13 @@ class ClaudeCodeHarness:
                                 message.api_error_status,
                                 message.errors,
                             )
-                            raise HarnessError("Claude could not answer. Please try again.")
+                            raise HarnessError(_error_key(message.api_error_status))
                         result_text = message.result
         except HarnessError:
             raise
         except Exception as exc:
             log.exception("claude harness crashed for profile %s", profile.name)
-            raise HarnessError("Something went wrong talking to Claude.") from exc
+            raise HarnessError("claude_crashed") from exc
 
         text = (result_text if result_text is not None else "".join(parts)).strip()
         return TurnResult(text=text or "(no reply)", harness_session_id=harness_session_id)

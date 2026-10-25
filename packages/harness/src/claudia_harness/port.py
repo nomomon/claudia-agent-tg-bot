@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from claudia_core import Profile, Session
+from claudia_core import Profile, Session, UserFacingError
 
 
-class HarnessError(Exception):
-    """A turn could not complete. The message is safe to show to the user."""
+class HarnessError(UserFacingError):
+    """A turn could not complete. `key` picks the message shown to the user."""
 
 
 @dataclass(frozen=True)
@@ -65,4 +65,4 @@ class HarnessRegistry:
         try:
             return self._harnesses[kind]
         except KeyError:
-            raise HarnessError(f"No harness registered for '{kind}'.") from None
+            raise HarnessError("no_harness") from None

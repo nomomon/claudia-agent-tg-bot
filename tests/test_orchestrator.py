@@ -75,7 +75,7 @@ async def test_voice_start_a_new_archives_and_confirms(seeded: SqliteStore) -> N
     after = seeded.active_session("sister")
     assert before is not None and after is not None and after.id != before.id
     assert len(harness.calls) == 1  # the command never reached the agent
-    assert sink.sent[-1].text == "Started a new session."
+    assert sink.sent[-1].text == "Начали новый разговор."
 
 
 async def test_typed_new_command(seeded: SqliteStore) -> None:
@@ -85,11 +85,11 @@ async def test_typed_new_command(seeded: SqliteStore) -> None:
 
 
 async def test_harness_error_is_shown_and_session_is_kept(seeded: SqliteStore) -> None:
-    harness = FakeHarness(fail_with="Claude could not answer. Please try again.")
+    harness = FakeHarness(fail_with="claude_failed")
     sink = FakeSink()
     await _orchestrator(seeded, harness).handle(_text("222", "hi"), sink)
 
-    assert sink.sent[-1].text == "Claude could not answer. Please try again."
+    assert sink.sent[-1].text == "Claude не смог ответить. Попробуйте ещё раз."
     assert sink.activities[-1] == "idle"
 
 
@@ -99,7 +99,7 @@ async def test_profile_without_login_is_refused(seeded: SqliteStore) -> None:
     await _orchestrator(seeded, harness).handle(_text("222", "hi"), sink)
 
     assert harness.calls == []
-    assert "not connected" in sink.sent[-1].text
+    assert "не подключён к Claude" in sink.sent[-1].text
 
 
 async def test_image_only_message_is_passed_as_images(seeded: SqliteStore) -> None:
@@ -128,3 +128,48 @@ async def test_ping_works_for_a_family_member_without_a_profile(seeded: SqliteSt
     sink = FakeSink()
     await _orchestrator(seeded, FakeHarness()).handle(_text("333", "/ping"), sink)
     assert [m.text for m in sink.sent] == ["pong"]
+
+
+async def test_sister_gets_errors_in_russian(seeded: SqliteStore) -> None:
+    harness = FakeHarness(fail_with="claude_login_invalid")
+    sink = FakeSink()
+    await _orchestrator(seeded, harness).handle(_text("222", "hi"), sink)
+    assert "Вход в Claude" in sink.sent[-1].text
+
+
+async def test_sister_status_and_new_session_are_russian(seeded: SqliteStore) -> None:
+    orchestrator = _orchestrator(seeded, FakeHarness())
+    sink = FakeSink()
+    await orchestrator.handle(_text("222", "/new"), sink)
+    assert sink.sent[-1].text == "Начали новый разговор."
+
+    sink = FakeSink()
+    await orchestrator.handle(_text("222", "/status"), sink)
+    assert sink.sent[-1].text.startswith("Профиль: sister")
+
+
+async def test_admin_errors_stay_english(seeded: SqliteStore) -> None:
+    harness = FakeHarness(fail_with="claude_rate_limited")
+    sink = FakeSink()
+    await _orchestrator(seeded, harness).handle(_text("111", "hi"), sink)
+    assert sink.sent[-1].text.startswith("Claude has hit its usage limit")
+
+
+async def test_voice_quota_still_delivers_the_text_reply(seeded: SqliteStore) -> None:
+    from claudia_core import UserFacingError
+
+    class QuotaSpeaker:
+        async def synthesize(self, text: str) -> bytes:
+            raise UserFacingError("voice_quota")
+
+    orchestrator = Orchestrator(
+        repo=seeded,
+        harnesses=HarnessRegistry({"claude": FakeHarness()}),
+        transcriber=FakeTranscriber("hi"),
+        speaker=QuotaSpeaker(),
+    )
+    sink = FakeSink()
+    await orchestrator.handle(_voice("222"), sink)
+    texts = [m.text for m in sink.sent]
+    assert any(t.startswith("echo: hi") for t in texts)
+    assert any("квота OpenAI" in t for t in texts)

@@ -10,11 +10,13 @@ from typing import Any
 
 from aiogram import Bot
 from aiogram.enums import ChatAction
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import Audio, BufferedInputFile, Message, PhotoSize, Update, Voice
 from claudia_channels import Activity, Orchestrator
 from claudia_core import Attachment, InboundMessage, OutboundMessage
 from fastapi import APIRouter, Header, HTTPException, Request, status
+
+from claudia_telegram.markdown import to_telegram_html
 
 log = logging.getLogger(__name__)
 
@@ -48,8 +50,17 @@ class TelegramSink:
             voice = BufferedInputFile(message.audio, filename="reply.ogg")
             await self._bot.send_voice(self._chat_id, voice)
         for chunk in _chunks(message.text):
-            # Plain text on purpose: no parse mode, so screen readers get clean text.
-            await self._bot.send_message(self._chat_id, chunk)
+            await self._send_formatted(chunk)
+
+    async def _send_formatted(self, markdown: str) -> None:
+        """Send as Telegram HTML. If Telegram rejects the markup, send the plain text."""
+        try:
+            await self._bot.send_message(
+                self._chat_id, to_telegram_html(markdown), parse_mode="HTML"
+            )
+        except TelegramBadRequest:
+            log.warning("telegram rejected formatted reply, sending plain text")
+            await self._bot.send_message(self._chat_id, markdown)
 
     async def _keep_alive(self, action: ChatAction) -> None:
         while True:

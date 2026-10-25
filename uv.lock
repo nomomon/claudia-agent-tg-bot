@@ -450,11 +450,15 @@ name = "claudia-media"
 version = "0.1.0"
 source = { editable = "packages/media" }
 dependencies = [
+    { name = "claudia-core" },
     { name = "openai" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "openai", specifier = ">=1.50" }]
+requires-dist = [
+    { name = "claudia-core", editable = "packages/core" },
+    { name = "openai", specifier = ">=1.50" },
+]
 
 [[package]]
 name = "claudia-store"

@@ -36,3 +36,7 @@ def test_typed_commands_are_exact() -> None:
     assert parse_command("/new", from_voice=False) is Command.NEW_SESSION
     assert parse_command("/STATUS", from_voice=False) is Command.STATUS
     assert parse_command("start a new", from_voice=False) is None
+
+
+def test_ping_is_a_typed_command() -> None:
+    assert parse_command("/ping", from_voice=False) is Command.PING

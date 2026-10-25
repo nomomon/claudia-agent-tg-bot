@@ -108,3 +108,14 @@ def test_resume_uses_the_stored_harness_session() -> None:
         control=None,
     )
     assert options.resume == "hs-42"
+
+
+def test_api_status_maps_to_a_message_key() -> None:
+    from claudia_harness_claude.harness import _error_key
+
+    assert _error_key(401) == "claude_login_invalid"
+    assert _error_key(429) == "claude_rate_limited"
+    assert _error_key(529) == "claude_overloaded"
+    assert _error_key(500) == "claude_overloaded"
+    assert _error_key(400) == "claude_failed"
+    assert _error_key(None) == "claude_failed"

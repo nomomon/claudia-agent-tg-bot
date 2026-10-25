@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from openai import AsyncOpenAI
+from claudia_core import UserFacingError
+from openai import APIError, AsyncOpenAI
+
+
+def _speech_error(exc: APIError) -> UserFacingError | None:
+    """Translate known OpenAI failures into message keys. Other errors are re-raised."""
+    if getattr(exc, "code", None) == "insufficient_quota":
+        return UserFacingError("voice_quota")
+    return None
 
 
 class OpenAISpeech:
@@ -25,17 +33,23 @@ class OpenAISpeech:
 
     async def transcribe(self, audio: bytes, mime_type: str) -> str:
         extension = mime_type.split("/")[-1].split(";")[0] or "ogg"
-        result = await self._client.audio.transcriptions.create(
-            model=self._stt_model,
-            file=(f"input.{extension}", audio, mime_type),
-        )
+        try:
+            result = await self._client.audio.transcriptions.create(
+                model=self._stt_model,
+                file=(f"input.{extension}", audio, mime_type),
+            )
+        except APIError as exc:
+            raise _speech_error(exc) or exc from exc
         return result.text.strip()
 
     async def synthesize(self, text: str) -> bytes:
-        response = await self._client.audio.speech.create(
-            model=self._tts_model,
-            voice=self._tts_voice,
-            input=text,
-            response_format="opus",
-        )
+        try:
+            response = await self._client.audio.speech.create(
+                model=self._tts_model,
+                voice=self._tts_voice,
+                input=text,
+                response_format="opus",
+            )
+        except APIError as exc:
+            raise _speech_error(exc) or exc from exc
         return response.content

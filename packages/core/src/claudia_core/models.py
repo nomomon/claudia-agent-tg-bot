@@ -36,6 +36,7 @@ class Profile:
     allow_self_control: bool = False
     voice_reply: bool = False
     system_prompt: str | None = None
+    language: str = "en"
     auth_token: str | None = field(default=None, repr=False)
 
 
