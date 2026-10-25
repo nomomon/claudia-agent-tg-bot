@@ -6,7 +6,14 @@ import mimetypes
 from dataclasses import dataclass, field
 from datetime import timedelta
 
-from claudia_core import Attachment, InboundMessage, OutboundMessage, Profile, UserFacingError
+from claudia_core import (
+    Attachment,
+    InboundMessage,
+    OutboundMessage,
+    OutgoingFile,
+    Profile,
+    UserFacingError,
+)
 from claudia_harness import HarnessRegistry, Turn, TurnFile, TurnImage
 
 from claudia_channels import messages
@@ -135,6 +142,7 @@ class Orchestrator:
                 turn=turn,
                 editor=self._repo,
                 on_session_id=remember,
+                outbox=_TurnOutbox(sink),
             )
         finally:
             await sink.activity("idle")
@@ -199,6 +207,19 @@ class Orchestrator:
 
     async def _say(self, sink: ReplySink, language: str, key: str) -> None:
         await sink.send(OutboundMessage(text=messages.text(key, language)))
+
+
+class _TurnOutbox:
+    """What a running turn may send before it finishes. Wraps the channel's reply sink."""
+
+    def __init__(self, sink: ReplySink) -> None:
+        self._sink = sink
+
+    async def send_text(self, text: str) -> None:
+        await self._sink.send_interim(OutboundMessage(text=text))
+
+    async def send_file(self, file: OutgoingFile) -> None:
+        await self._sink.send_file(file)
 
 
 def _as_turn_file(attachment: Attachment, number: int) -> TurnFile:

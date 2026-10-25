@@ -37,6 +37,7 @@ class Profile:
     voice_reply: bool = False
     system_prompt: str | None = None
     language: str = "en"
+    allow_outbox: bool = False
     auth_token: str | None = field(default=None, repr=False)
 
 
@@ -64,6 +65,17 @@ class Attachment:
     data: bytes = field(repr=False)
     mime_type: str
     filename: str | None = None
+
+
+@dataclass(frozen=True)
+class OutgoingFile:
+    """A file the agent asked to send. `kind` is "photo" (shown inline) or "document"."""
+
+    kind: Literal["photo", "document"]
+    name: str
+    data: bytes = field(repr=False)
+    mime_type: str
+    caption: str = ""
 
 
 @dataclass(frozen=True)

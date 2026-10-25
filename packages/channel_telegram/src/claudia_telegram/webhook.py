@@ -14,7 +14,13 @@ from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.types import BufferedInputFile, Message, Update
 from aiogram.types.downloadable import Downloadable
 from claudia_channels import Activity, Orchestrator
-from claudia_core import Attachment, AttachmentKind, InboundMessage, OutboundMessage
+from claudia_core import (
+    Attachment,
+    AttachmentKind,
+    InboundMessage,
+    OutboundMessage,
+    OutgoingFile,
+)
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from claudia_telegram.markdown import to_telegram_html
@@ -24,6 +30,7 @@ log = logging.getLogger(__name__)
 CHANNEL = "telegram"
 TELEGRAM_MESSAGE_LIMIT = 4096
 CAPTION_TEXT_LIMIT = 900
+CAPTION_LIMIT = 1024  # Telegram's hard cap for any media caption
 ACTION_REFRESH_SECONDS = 4
 
 _ACTIONS: dict[Activity, ChatAction] = {
@@ -54,6 +61,18 @@ class TelegramSink:
             return
         for chunk in _chunks(message.text):
             await self._send_formatted(chunk)
+
+    async def send_interim(self, message: OutboundMessage) -> None:
+        for chunk in _chunks(message.text):
+            await self._send_formatted(chunk)
+
+    async def send_file(self, file: OutgoingFile) -> None:
+        document = BufferedInputFile(file.data, filename=file.name)
+        caption = file.caption[:CAPTION_LIMIT] or None
+        if file.kind == "photo":
+            await self._bot.send_photo(self._chat_id, document, caption=caption)
+        else:
+            await self._bot.send_document(self._chat_id, document, caption=caption)
 
     async def _send_voice(self, audio: bytes, text: str) -> None:
         voice = BufferedInputFile(audio, filename="reply.ogg")

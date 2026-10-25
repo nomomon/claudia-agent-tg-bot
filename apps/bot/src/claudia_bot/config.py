@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     webhook_path: str = "/telegram/webhook"
     openai_api_key: SecretStr | None = None
-    # OpenAI TTS voice for spoken replies, e.g. nova, shimmer, coral, alloy.
-    tts_voice: str = "nova"
+    # OpenAI TTS voice for spoken replies, e.g. shimmer, nova, coral, alloy.
+    tts_voice: str = "shimmer"
     # After this many hours without a message, the next one starts a fresh session.
     session_idle_hours: float = 6.0
 
@@ -164,6 +164,7 @@ def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
                 voice_reply=bool(entry.get("voice_reply", False)),
                 system_prompt=entry.get("system_prompt"),
                 language=_language(entry),
+                allow_outbox=bool(entry.get("allow_outbox", False)),
             )
         )
 

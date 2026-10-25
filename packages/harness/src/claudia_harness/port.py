@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from claudia_core import Profile, Session, UserFacingError
+from claudia_core import OutgoingFile, Profile, Session, UserFacingError
 
 
 class HarnessError(UserFacingError):
@@ -48,6 +48,14 @@ class ProfileEditor(Protocol):
     async def get_profile(self, profile_name: str) -> Profile: ...
 
 
+class Outbox(Protocol):
+    """How a running turn sends things to the person, before or instead of its final reply."""
+
+    async def send_text(self, text: str) -> None: ...
+
+    async def send_file(self, file: OutgoingFile) -> None: ...
+
+
 class Harness(Protocol):
     kind: str
 
@@ -59,6 +67,7 @@ class Harness(Protocol):
         turn: Turn,
         editor: ProfileEditor,
         on_session_id: Callable[[str], None] | None = None,
+        outbox: Outbox | None = None,
     ) -> TurnResult:
         """Run one user turn. Raise HarnessError for failures the user should see.
 

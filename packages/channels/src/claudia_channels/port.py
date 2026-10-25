@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Literal, Protocol
 
-from claudia_core import OutboundMessage, Principal, Profile, Session
+from claudia_core import OutboundMessage, OutgoingFile, Principal, Profile, Session
 from claudia_harness import ProfileEditor
 
 Activity = Literal["typing", "recording", "idle"]
@@ -17,6 +17,12 @@ class ReplySink(Protocol):
         ...
 
     async def send(self, message: OutboundMessage) -> None: ...
+
+    async def send_interim(self, message: OutboundMessage) -> None:
+        """Send while the turn is still running. Keeps the typing indicator going."""
+        ...
+
+    async def send_file(self, file: OutgoingFile) -> None: ...
 
 
 class Transcriber(Protocol):

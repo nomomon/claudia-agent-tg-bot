@@ -18,7 +18,7 @@ from claude_agent_sdk import (
     query,
 )
 from claudia_core import Profile, Session
-from claudia_harness import HarnessError, ProfileEditor, Turn, TurnResult
+from claudia_harness import HarnessError, Outbox, ProfileEditor, Turn, TurnResult
 
 from claudia_harness_claude.control import CONTROL_SERVER, control_tool_names, make_control_server
 
@@ -66,11 +66,12 @@ def build_options(
     config_root: Path,
     scrub_env: Sequence[str],
     control: McpSdkServerConfig | None,
+    control_tools: Sequence[str] | None = None,
 ) -> ClaudeAgentOptions:
     allowed = list(profile.tools)
     mcp_servers: dict[str, Any] = {}
     if control is not None:
-        allowed.extend(control_tool_names())
+        allowed.extend(control_tools if control_tools is not None else control_tool_names())
         mcp_servers[CONTROL_SERVER] = control
 
     return ClaudeAgentOptions(
@@ -199,20 +200,32 @@ class ClaudeCodeHarness:
         turn: Turn,
         editor: ProfileEditor,
         on_session_id: Callable[[str], None] | None = None,
+        outbox: Outbox | None = None,
     ) -> TurnResult:
         if not profile.auth_token:
             raise HarnessError("not_connected")
 
-        control = make_control_server(profile, editor) if profile.allow_self_control else None
+        inbox = self._config_root / "inbox" / profile.name
+        can_send = profile.allow_outbox and outbox is not None
+        control = None
+        if profile.allow_self_control or can_send:
+            # The agent may send files from its working folder and from the bot's inbox.
+            control = make_control_server(
+                profile,
+                editor,
+                outbox=outbox,
+                sendable_roots=[Path(profile.working_dir), inbox],
+            )
         options = build_options(
             profile,
             session,
             config_root=self._config_root,
             scrub_env=self._scrub_env,
             control=control,
+            control_tools=control_tool_names(
+                self_control=profile.allow_self_control, outbox=can_send
+            ),
         )
-
-        inbox = self._config_root / "inbox" / profile.name
         extra, notes = _describe_turn_files(profile, turn, inbox)
         if turn.images or extra:
             prompt: Any = _single_prompt(_content_blocks(turn, extra, notes))

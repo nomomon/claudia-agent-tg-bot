@@ -48,6 +48,9 @@ MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE profiles ADD COLUMN language TEXT NOT NULL DEFAULT 'en';
     """,
+    """
+    ALTER TABLE profiles ADD COLUMN allow_outbox INTEGER NOT NULL DEFAULT 0;
+    """,
 )
 
 
@@ -104,8 +107,9 @@ class SqliteStore:
                 self._conn.execute(
                     """
                     INSERT INTO profiles (name, principal_id, harness, working_dir, tools,
-                        model, models, allow_self_control, voice_reply, system_prompt, language)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        model, models, allow_self_control, voice_reply, system_prompt, language,
+                        allow_outbox)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         principal_id = excluded.principal_id,
                         harness = excluded.harness,
@@ -115,7 +119,8 @@ class SqliteStore:
                         allow_self_control = excluded.allow_self_control,
                         voice_reply = excluded.voice_reply,
                         system_prompt = excluded.system_prompt,
-                        language = excluded.language
+                        language = excluded.language,
+                        allow_outbox = excluded.allow_outbox
                     """,
                     (
                         pr.name,
@@ -129,6 +134,7 @@ class SqliteStore:
                         int(pr.voice_reply),
                         pr.system_prompt,
                         pr.language,
+                        int(pr.allow_outbox),
                     ),
                 )
             self._conn.execute("COMMIT")
@@ -264,6 +270,7 @@ def _profile(row: sqlite3.Row) -> Profile:
         voice_reply=bool(row["voice_reply"]),
         system_prompt=row["system_prompt"],
         language=row["language"],
+        allow_outbox=bool(row["allow_outbox"]),
         auth_token=row["auth_token"],
     )
 
