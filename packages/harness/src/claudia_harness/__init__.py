@@ -4,6 +4,7 @@ from claudia_harness.port import (
     HarnessRegistry,
     ProfileEditor,
     Turn,
+    TurnFile,
     TurnImage,
     TurnResult,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "HarnessRegistry",
     "ProfileEditor",
     "Turn",
+    "TurnFile",
     "TurnImage",
     "TurnResult",
 ]

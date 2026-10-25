@@ -11,9 +11,10 @@ from typing import Any
 from aiogram import Bot
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
-from aiogram.types import Audio, BufferedInputFile, Message, PhotoSize, Update, Voice
+from aiogram.types import BufferedInputFile, Message, Update
+from aiogram.types.downloadable import Downloadable
 from claudia_channels import Activity, Orchestrator
-from claudia_core import Attachment, InboundMessage, OutboundMessage
+from claudia_core import Attachment, AttachmentKind, InboundMessage, OutboundMessage
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from claudia_telegram.markdown import to_telegram_html
@@ -133,31 +134,63 @@ class TelegramChannel:
         task.add_done_callback(self._tasks.discard)
 
 
-async def _download(bot: Bot, file: Voice | Audio | PhotoSize) -> bytes:
+async def _download(bot: Bot, file: Downloadable) -> bytes:
+    """Fetch a file from Telegram. Bots can only download files up to 20 MB.
+
+    Returns empty bytes when Telegram refuses, so the orchestrator can say why.
+    """
     buffer = io.BytesIO()
-    await bot.download(file, destination=buffer)
+    try:
+        await bot.download(file, destination=buffer)
+    except TelegramBadRequest:
+        log.warning("telegram would not download a file (probably over 20 MB)")
+        return b""
     return buffer.getvalue()
 
 
-async def _to_inbound(bot: Bot, message: Message) -> InboundMessage:
-    attachments: list[Attachment] = []
-    if message.voice is not None:
-        audio = await _download(bot, message.voice)
-        attachments.append(Attachment("audio", audio, "audio/ogg"))
-    elif message.audio is not None:
-        audio = await _download(bot, message.audio)
-        mime = message.audio.mime_type or "audio/mpeg"
-        attachments.append(Attachment("audio", audio, mime))
-    if message.photo:
-        image = await _download(bot, message.photo[-1])
-        attachments.append(Attachment("image", image, "image/jpeg"))
+async def _attach(bot: Bot, message: Message) -> list[Attachment]:
+    """Every media type Telegram sends, mapped to a kind and mime type the bot understands."""
+    found: list[Attachment] = []
 
+    async def add(kind: AttachmentKind, obj: Downloadable, mime: str, name: str | None) -> None:
+        found.append(Attachment(kind, await _download(bot, obj), mime, name))
+
+    if message.voice is not None:
+        await add("audio", message.voice, message.voice.mime_type or "audio/ogg", None)
+    if message.audio is not None:
+        name = message.audio.file_name
+        await add("audio", message.audio, message.audio.mime_type or "audio/mpeg", name)
+    if message.photo:
+        await add("image", message.photo[-1], "image/jpeg", None)
+    if message.document is not None:
+        doc = message.document
+        await add("file", doc, doc.mime_type or "application/octet-stream", doc.file_name)
+    if message.video is not None:
+        video = message.video
+        await add("video", video, video.mime_type or "video/mp4", video.file_name)
+    if message.video_note is not None:
+        await add("video", message.video_note, "video/mp4", None)
+    if message.animation is not None:
+        anim = message.animation
+        await add("video", anim, anim.mime_type or "video/mp4", anim.file_name)
+    if message.sticker is not None:
+        sticker = message.sticker
+        if sticker.is_video:
+            await add("video", sticker, "video/webm", None)
+        elif sticker.is_animated:
+            await add("file", sticker, "application/x-tgsticker", "sticker.tgs")
+        else:
+            await add("image", sticker, "image/webp", None)
+    return found
+
+
+async def _to_inbound(bot: Bot, message: Message) -> InboundMessage:
     sender = message.from_user
     return InboundMessage(
         channel=CHANNEL,
         sender_id=str(sender.id) if sender else "",
         text=message.text or message.caption,
-        attachments=tuple(attachments),
+        attachments=tuple(await _attach(bot, message)),
     )
 
 

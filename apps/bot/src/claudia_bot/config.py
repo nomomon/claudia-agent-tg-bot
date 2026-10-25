@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     # OpenAI TTS voice for spoken replies, e.g. nova, shimmer, coral, alloy.
     tts_voice: str = "nova"
+    # After this many hours without a message, the next one starts a fresh session.
+    session_idle_hours: float = 6.0
 
     data_dir: Path = Path("data")
     # Full bot.toml text. Used to create the editable copy in data_dir on first boot.

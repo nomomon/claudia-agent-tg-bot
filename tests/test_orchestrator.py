@@ -1,3 +1,5 @@
+import asyncio
+
 from claudia_channels import Orchestrator
 from claudia_core import Attachment, InboundMessage, Principal, Role
 from claudia_harness import HarnessRegistry
@@ -173,3 +175,84 @@ async def test_voice_quota_still_delivers_the_text_reply(seeded: SqliteStore) ->
     texts = [m.text for m in sink.sent]
     assert any(t.startswith("echo: hi") for t in texts)
     assert any("квота OpenAI" in t for t in texts)
+
+
+class _BlockingHarness(FakeHarness):
+    """Stays busy until cancelled, like a long agent turn."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+
+    async def run_turn(self, **kwargs):  # type: ignore[override]
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("never reached")
+
+
+async def test_newer_message_pauses_the_running_turn(seeded: SqliteStore) -> None:
+    harness = _BlockingHarness()
+    orchestrator = _orchestrator(seeded, harness)
+    first_sink, second_sink = FakeSink(), FakeSink()
+
+    first = asyncio.create_task(orchestrator.handle(_text("222", "long question"), first_sink))
+    await harness.started.wait()
+    harness.started.clear()
+
+    harness_second = FakeHarness()
+    orchestrator._harnesses = HarnessRegistry({"claude": harness_second})
+    await orchestrator.handle(_text("222", "actually, this one"), second_sink)
+    await first
+
+    assert first_sink.sent == []  # the paused turn says nothing
+    assert [m.text for m in second_sink.sent] == ["echo: actually, this one"]
+
+
+async def test_idle_session_is_renewed_with_a_notice(seeded: SqliteStore) -> None:
+    harness = FakeHarness()
+    orchestrator = _orchestrator(seeded, harness)
+    await orchestrator.handle(_text("222", "first"), FakeSink())
+    old = seeded.active_session("sister")
+    assert old is not None
+
+    seeded._conn.execute(
+        "UPDATE sessions SET updated_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (old.id,)
+    )
+    sink = FakeSink()
+    await orchestrator.handle(_text("222", "back again"), sink)
+
+    new = seeded.active_session("sister")
+    assert new is not None and new.id != old.id
+    assert sink.sent[0].text.startswith("Прошло много времени")
+    assert sink.sent[-1].text == "echo: back again"
+
+
+async def test_recent_session_is_kept(seeded: SqliteStore) -> None:
+    orchestrator = _orchestrator(seeded, FakeHarness())
+    await orchestrator.handle(_text("222", "one"), FakeSink())
+    before = seeded.active_session("sister")
+    await orchestrator.handle(_text("222", "two"), FakeSink())
+    after = seeded.active_session("sister")
+    assert before is not None and after is not None and after.id == before.id
+
+
+async def test_document_is_passed_as_a_file(seeded: SqliteStore) -> None:
+    doc = Attachment("file", b"%PDF-1.4", "application/pdf", "notes.pdf")
+    harness = FakeHarness()
+    message = InboundMessage(channel="telegram", sender_id="111", attachments=(doc,))
+    await _orchestrator(seeded, harness).handle(message, FakeSink())
+
+    files = harness.calls[0].turn.files
+    assert len(files) == 1 and files[0].name == "notes.pdf"
+    assert files[0].mime_type == "application/pdf"
+
+
+async def test_file_without_caption_gets_a_placeholder(seeded: SqliteStore) -> None:
+    csv = Attachment("file", b"a,b", "text/csv", "data.csv")
+    harness = FakeHarness()
+    message = InboundMessage(channel="telegram", sender_id="111", attachments=(csv,))
+    await _orchestrator(seeded, harness).handle(message, FakeSink())
+    assert (
+        harness.calls[0].turn.text == "(отправлен файл)"
+        or harness.calls[0].turn.text == "(sent a file)"
+    )

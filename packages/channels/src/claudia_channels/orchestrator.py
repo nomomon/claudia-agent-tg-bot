@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+import mimetypes
+from dataclasses import dataclass, field
+from datetime import timedelta
 
 from claudia_core import Attachment, InboundMessage, OutboundMessage, Profile, UserFacingError
-from claudia_harness import HarnessRegistry, Turn, TurnImage
+from claudia_harness import HarnessRegistry, Turn, TurnFile, TurnImage
 
 from claudia_channels import messages
 from claudia_channels.commands import Command, parse_command
@@ -14,13 +16,27 @@ from claudia_channels.port import ReplySink, Repository, Speaker, Transcriber
 log = logging.getLogger(__name__)
 
 DEFAULT_LANGUAGE = "en"
+DEFAULT_SESSION_IDLE = timedelta(hours=6)
+
+
+@dataclass
+class _Inbound:
+    """One inbound message, read into the parts a turn needs."""
+
+    text: str | None = None
+    from_voice: bool = False
+    images: list[TurnImage] = field(default_factory=list)
+    files: list[TurnFile] = field(default_factory=list)
 
 
 class Orchestrator:
-    """Turns one inbound message into one reply, for any channel and any harness.
+    """Turns inbound messages into replies, for any channel and any harness.
 
     Isolation: every lookup goes through the sender's principal, so one person's
     profile and sessions are never reachable from another person's message.
+
+    Interruption: a newer message from the same person cancels the turn that is running and
+    starts at once. Nothing waits in a queue. The cancelled turn sends nothing.
     """
 
     def __init__(
@@ -30,13 +46,14 @@ class Orchestrator:
         harnesses: HarnessRegistry,
         transcriber: Transcriber | None = None,
         speaker: Speaker | None = None,
+        session_idle: timedelta = DEFAULT_SESSION_IDLE,
     ) -> None:
         self._repo = repo
         self._harnesses = harnesses
         self._transcriber = transcriber
         self._speaker = speaker
-        # One turn at a time per principal, so two fast messages cannot fork a session.
-        self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._session_idle = session_idle
+        self._turns: dict[str, asyncio.Task[None]] = {}
 
     async def handle(self, msg: InboundMessage, sink: ReplySink) -> None:
         principal = self._repo.principal_for_identity(msg.channel, msg.sender_id)
@@ -51,36 +68,64 @@ class Orchestrator:
             await sink.send(OutboundMessage(text="pong"))
             return
 
-        async with self._locks[principal.id]:
-            profile = self._repo.profile_for_principal(principal.id)
-            if profile is None:
-                await self._say(sink, DEFAULT_LANGUAGE, "no_profile")
-                return
-            try:
-                await self._dispatch(msg, profile, sink)
-            except UserFacingError as exc:
-                await self._say(sink, profile.language, exc.key)
+        profile = self._repo.profile_for_principal(principal.id)
+        if profile is None:
+            await self._say(sink, DEFAULT_LANGUAGE, "no_profile")
+            return
+
+        await self._replace_running_turn(profile.name)
+        task = asyncio.create_task(self._run(msg, profile, sink))
+        self._turns[profile.name] = task
+        await asyncio.wait({task})
+        if self._turns.get(profile.name) is task:
+            del self._turns[profile.name]
+        if not task.cancelled() and task.exception() is not None:
+            log.error("turn failed unexpectedly", exc_info=task.exception())
+
+    async def _replace_running_turn(self, profile_name: str) -> None:
+        running = self._turns.get(profile_name)
+        if running is None or running.done():
+            return
+        log.info("newer message for %s, pausing the running turn", profile_name)
+        running.cancel()
+        await asyncio.wait({running})
+
+    async def _run(self, msg: InboundMessage, profile: Profile, sink: ReplySink) -> None:
+        try:
+            await self._dispatch(msg, profile, sink)
+        except UserFacingError as exc:
+            await self._say(sink, profile.language, exc.key)
 
     async def _dispatch(self, msg: InboundMessage, profile: Profile, sink: ReplySink) -> None:
-        text, from_voice = await self._text_of(msg, profile)
-        if text is None:
+        inbound = await self._read(msg, profile)
+        if inbound is None:
             return
 
-        command = parse_command(text, from_voice=from_voice)
+        text = inbound.text or ""
+        command = parse_command(text, from_voice=inbound.from_voice)
         if command is Command.NEW_SESSION:
             self._repo.start_new_session(profile.name)
-            await self._reply(sink, profile, _t(profile, "new_session"), voice=from_voice)
+            await self._reply(sink, profile, _t(profile, "new_session"), voice=inbound.from_voice)
             return
         if command is Command.STATUS:
-            await self._reply(sink, profile, _describe(profile), voice=from_voice)
+            await self._reply(sink, profile, _describe(profile), voice=inbound.from_voice)
             return
 
         if not profile.auth_token:
             raise UserFacingError("not_connected")
 
+        if self._repo.is_idle(profile.name, self._session_idle):
+            self._repo.start_new_session(profile.name)
+            await self._say(sink, profile.language, "session_renewed")
+
         harness = self._harnesses.get(profile.harness)
         session = self._repo.ensure_session(profile.name)
-        turn = Turn(text=text, images=tuple(_images(msg.attachments)))
+        self._repo.touch_session(session.id)
+        turn = Turn(text=text, images=tuple(inbound.images), files=tuple(inbound.files))
+
+        def remember(harness_session_id: str) -> None:
+            # Saved as soon as it is known, so an interrupted turn can still be resumed.
+            self._repo.set_harness_session_id(session.id, harness_session_id)
 
         await sink.activity("typing")
         try:
@@ -89,41 +134,52 @@ class Orchestrator:
                 session=session,
                 turn=turn,
                 editor=self._repo,
+                on_session_id=remember,
             )
         finally:
             await sink.activity("idle")
 
         if result.harness_session_id:
-            self._repo.set_harness_session_id(session.id, result.harness_session_id)
+            remember(result.harness_session_id)
         reply = result.text or _t(profile, "no_reply")
-        await self._reply(sink, profile, reply, voice=from_voice or profile.voice_reply)
+        await self._reply(sink, profile, reply, voice=inbound.from_voice or profile.voice_reply)
 
-    async def _text_of(self, msg: InboundMessage, profile: Profile) -> tuple[str | None, bool]:
-        """Return the text to act on, and whether it came from speech."""
-        parts: list[str] = []
-        from_voice = False
-        for attachment in msg.attachments:
-            if attachment.kind != "audio":
-                continue
-            from_voice = True
-            if self._transcriber is None:
-                raise UserFacingError("voice_off")
-            try:
-                parts.append(
-                    await self._transcriber.transcribe(attachment.data, attachment.mime_type)
-                )
-            except UserFacingError:
-                raise
-            except Exception:
-                log.exception("transcription failed")
-                raise UserFacingError("voice_failed") from None
-        if msg.text:
-            parts.insert(0, msg.text)
+    async def _read(self, msg: InboundMessage, profile: Profile) -> _Inbound | None:
+        """Turn the message's attachments and text into what the turn needs.
 
+        Returns None when there is nothing to act on.
+        """
+        inbound = _Inbound()
+        spoken: list[str] = []
+        for number, attachment in enumerate(msg.attachments, start=1):
+            if attachment.kind == "audio":
+                inbound.from_voice = True
+                spoken.append(await self._transcribe(attachment))
+            elif attachment.kind == "image":
+                if attachment.data:
+                    inbound.images.append(TurnImage(attachment.data, attachment.mime_type))
+            else:
+                inbound.files.append(_as_turn_file(attachment, number))
+
+        parts = [msg.text or "", *spoken]
         text = " ".join(p for p in parts if p).strip()
-        if not text and not _images(msg.attachments):
-            return None, from_voice
-        return text or _t(profile, "image_only"), from_voice
+        if not text and not inbound.images and not inbound.files:
+            return None
+        if not text:
+            text = _t(profile, "image_only" if inbound.images else "file_only")
+        inbound.text = text
+        return inbound
+
+    async def _transcribe(self, attachment: Attachment) -> str:
+        if self._transcriber is None:
+            raise UserFacingError("voice_off")
+        try:
+            return await self._transcriber.transcribe(attachment.data, attachment.mime_type)
+        except UserFacingError:
+            raise
+        except Exception:
+            log.exception("transcription failed")
+            raise UserFacingError("voice_failed") from None
 
     async def _reply(self, sink: ReplySink, profile: Profile, text: str, *, voice: bool) -> None:
         if not voice or self._speaker is None:
@@ -145,12 +201,16 @@ class Orchestrator:
         await sink.send(OutboundMessage(text=messages.text(key, language)))
 
 
+def _as_turn_file(attachment: Attachment, number: int) -> TurnFile:
+    name = attachment.filename
+    if not name:
+        extension = mimetypes.guess_extension(attachment.mime_type) or ""
+        name = f"{attachment.kind}-{number}{extension}"
+    return TurnFile(name=name, data=attachment.data, mime_type=attachment.mime_type)
+
+
 def _t(profile: Profile, key: str) -> str:
     return messages.text(key, profile.language)
-
-
-def _images(attachments: tuple[Attachment, ...]) -> list[TurnImage]:
-    return [TurnImage(data=a.data, mime_type=a.mime_type) for a in attachments if a.kind == "image"]
 
 
 def _describe(profile: Profile) -> str:

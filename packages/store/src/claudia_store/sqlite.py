@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from claudia_core import Principal, Profile, Role, Session
@@ -192,6 +192,21 @@ class SqliteStore:
             (profile_name,),
         ).fetchone()
         return _session(row) if row else None
+
+    def is_idle(self, profile_name: str, idle_after: timedelta) -> bool:
+        """True when the active session has seen no activity for longer than idle_after."""
+        row = self._conn.execute(
+            "SELECT updated_at FROM sessions WHERE profile_name = ? AND status = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            (profile_name,),
+        ).fetchone()
+        if row is None:
+            return False
+        last = datetime.fromisoformat(row["updated_at"])
+        return datetime.now(UTC) - last > idle_after
+
+    def touch_session(self, session_id: int) -> None:
+        self._conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (_now(), session_id))
 
     def ensure_session(self, profile_name: str) -> Session:
         existing = self.active_session(profile_name)

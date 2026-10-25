@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from claudia_core import OutboundMessage, Profile, Session
@@ -41,12 +42,15 @@ class FakeHarness:
         session: Session,
         turn: Turn,
         editor: ProfileEditor,
+        on_session_id: Callable[[str], None] | None = None,
     ) -> TurnResult:
         self.calls.append(Call(profile=profile, session=session, turn=turn))
         if self.fail_with:
             raise HarnessError(self.fail_with)
         self._counter += 1
         harness_session_id = session.harness_session_id or f"hs-{profile.name}-{self._counter}"
+        if on_session_id is not None:
+            on_session_id(harness_session_id)
         return TurnResult(text=f"echo: {turn.text}", harness_session_id=harness_session_id)
 
 

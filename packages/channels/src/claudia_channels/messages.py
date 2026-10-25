@@ -43,6 +43,11 @@ _MESSAGES: dict[str, dict[str, str]] = {
     "on": {"en": "on", "ru": "включены"},
     "off": {"en": "off", "ru": "выключены"},
     "default_model": {"en": "default", "ru": "по умолчанию"},
+    "file_only": {"en": "(sent a file)", "ru": "(отправлен файл)"},
+    "session_renewed": {
+        "en": "It has been a while, so I started a fresh conversation. Ask me if you want to pick up something from before.",
+        "ru": "Прошло много времени, поэтому я начала новый разговор. Если хотите вернуться к прошлому, просто спросите.",
+    },
     "image_only": {"en": "(sent an image)", "ru": "(отправлено изображение)"},
     "no_reply": {"en": "(no reply)", "ru": "(нет ответа)"},
     "not_connected": {

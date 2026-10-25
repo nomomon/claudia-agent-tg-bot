@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Literal, Protocol
 
 from claudia_core import OutboundMessage, Principal, Profile, Session
@@ -40,3 +41,7 @@ class Repository(ProfileEditor, Protocol):
     def start_new_session(self, profile_name: str) -> Session: ...
 
     def set_harness_session_id(self, session_id: int, harness_session_id: str) -> None: ...
+
+    def touch_session(self, session_id: int) -> None: ...
+
+    def is_idle(self, profile_name: str, idle_after: timedelta) -> bool: ...

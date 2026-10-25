@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -17,9 +18,17 @@ class TurnImage:
 
 
 @dataclass(frozen=True)
+class TurnFile:
+    name: str
+    data: bytes = field(repr=False)
+    mime_type: str
+
+
+@dataclass(frozen=True)
 class Turn:
     text: str
     images: tuple[TurnImage, ...] = ()
+    files: tuple[TurnFile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,8 +58,13 @@ class Harness(Protocol):
         session: Session,
         turn: Turn,
         editor: ProfileEditor,
+        on_session_id: Callable[[str], None] | None = None,
     ) -> TurnResult:
-        """Run one user turn. Raise HarnessError for failures the user should see."""
+        """Run one user turn. Raise HarnessError for failures the user should see.
+
+        on_session_id is called as soon as the harness knows its session id, so a turn that is
+        cancelled midway still leaves the session resumable.
+        """
         ...
 
 

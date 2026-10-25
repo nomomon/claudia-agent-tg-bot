@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from aiogram import Bot
 from claudia_channels import Orchestrator
@@ -62,6 +63,7 @@ def build_container(settings: Settings) -> Container:
         harnesses=harnesses,
         transcriber=speech,
         speaker=speech,
+        session_idle=timedelta(hours=settings.session_idle_hours),
     )
 
     bot = Bot(token=settings.telegram_bot_token.get_secret_value())

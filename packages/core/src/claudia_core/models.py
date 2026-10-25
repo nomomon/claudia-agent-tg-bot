@@ -50,11 +50,20 @@ class Session:
     status: Literal["active", "archived"]
 
 
+AttachmentKind = Literal["audio", "image", "video", "file"]
+
+
 @dataclass(frozen=True)
 class Attachment:
-    kind: Literal["audio", "image"]
+    """Any media a person sent. `kind` decides how the bot handles it.
+
+    `filename` is the name Telegram reports, when there is one.
+    """
+
+    kind: AttachmentKind
     data: bytes = field(repr=False)
     mime_type: str
+    filename: str | None = None
 
 
 @dataclass(frozen=True)

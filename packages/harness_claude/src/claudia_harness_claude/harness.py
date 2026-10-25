@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Sequence
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -84,7 +86,75 @@ def build_options(
     )
 
 
-async def _single_prompt(text: str, turn: Turn) -> AsyncIterator[dict[str, Any]]:
+# Files Claude can read natively, as content blocks. Everything else goes to disk.
+NATIVE_DOCUMENT_TYPES = ("application/pdf",)
+
+
+def _inbox_name(name: str) -> str:
+    """A filesystem-safe name. Keeps the extension, drops anything path-like."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+    return safe.lstrip(".") or "file"
+
+
+def _kib(size: int) -> str:
+    return f"{max(1, round(size / 1024))} KB"
+
+
+def _describe_turn_files(
+    profile: Profile,
+    turn: Turn,
+    inbox: Path,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Split a turn's files into content blocks and notes for the prompt text.
+
+    PDFs go in as document blocks. Other files are saved under the bot's data folder and the
+    path is given, but only when the profile can read files. Profiles without a reading tool
+    are told the file exists, so the reply can say so honestly.
+    """
+    blocks: list[dict[str, Any]] = []
+    notes: list[str] = []
+    can_read = "Read" in profile.tools
+    for file in turn.files:
+        if not file.data:
+            notes.append(f"[The person sent a file called {file.name}, too large for the bot.]")
+        elif file.mime_type in NATIVE_DOCUMENT_TYPES:
+            blocks.append(
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": file.mime_type,
+                        "data": base64.b64encode(file.data).decode("ascii"),
+                    },
+                }
+            )
+        elif can_read:
+            inbox.mkdir(parents=True, exist_ok=True)
+            path = inbox / f"{uuid4().hex[:8]}-{_inbox_name(file.name)}"
+            path.write_bytes(file.data)
+            notes.append(
+                f"[The person sent a file ({file.mime_type}, {_kib(len(file.data))}), "
+                f"saved at {path}. Read it if it helps.]"
+            )
+        else:
+            notes.append(
+                f"[The person sent a file called {file.name} ({file.mime_type}, "
+                f"{_kib(len(file.data))}). You cannot open it in this chat.]"
+            )
+    return blocks, notes
+
+
+async def _single_prompt(content: list[dict[str, Any]]) -> AsyncIterator[dict[str, Any]]:
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": content},
+        "parent_tool_use_id": None,
+    }
+
+
+def _content_blocks(
+    turn: Turn, extra: list[dict[str, Any]], notes: list[str]
+) -> list[dict[str, Any]]:
     content: list[dict[str, Any]] = []
     for image in turn.images:
         content.append(
@@ -97,12 +167,10 @@ async def _single_prompt(text: str, turn: Turn) -> AsyncIterator[dict[str, Any]]
                 },
             }
         )
-    content.append({"type": "text", "text": text})
-    yield {
-        "type": "user",
-        "message": {"role": "user", "content": content},
-        "parent_tool_use_id": None,
-    }
+    content.extend(extra)
+    text = "\n".join([turn.text, *notes]).strip()
+    content.append({"type": "text", "text": text or "(no text)"})
+    return content
 
 
 def _error_key(status: int | None) -> str:
@@ -130,6 +198,7 @@ class ClaudeCodeHarness:
         session: Session,
         turn: Turn,
         editor: ProfileEditor,
+        on_session_id: Callable[[str], None] | None = None,
     ) -> TurnResult:
         if not profile.auth_token:
             raise HarnessError("not_connected")
@@ -143,22 +212,30 @@ class ClaudeCodeHarness:
             control=control,
         )
 
-        prompt: Any = turn.text
-        if turn.images:
-            prompt = _single_prompt(turn.text, turn)
+        inbox = self._config_root / "inbox" / profile.name
+        extra, notes = _describe_turn_files(profile, turn, inbox)
+        if turn.images or extra:
+            prompt: Any = _single_prompt(_content_blocks(turn, extra, notes))
+        else:
+            prompt = turn.text
 
         parts: list[str] = []
         result_text: str | None = None
         harness_session_id: str | None = None
         try:
-            # query() is an async generator; aclosing stops the CLI subprocess if we bail out early.
+            # query() is an async generator; aclosing stops the CLI subprocess when a turn is
+            # cancelled (for example, when the person sends a newer message).
             stream = cast(AsyncGenerator[Any, None], query(prompt=prompt, options=options))
             async with aclosing(stream) as messages:
                 async for message in messages:
+                    seen = getattr(message, "session_id", None)
+                    if seen and seen != harness_session_id:
+                        harness_session_id = seen
+                        if on_session_id is not None:
+                            on_session_id(seen)
                     if isinstance(message, AssistantMessage):
                         parts.extend(b.text for b in message.content if isinstance(b, TextBlock))
                     elif isinstance(message, ResultMessage):
-                        harness_session_id = message.session_id
                         if message.is_error:
                             log.error(
                                 "claude turn failed: subtype=%s status=%s errors=%s",
@@ -169,6 +246,9 @@ class ClaudeCodeHarness:
                             raise HarnessError(_error_key(message.api_error_status))
                         result_text = message.result
         except HarnessError:
+            raise
+        except asyncio.CancelledError:
+            # A newer message replaced this turn. Let the cancellation propagate.
             raise
         except Exception as exc:
             log.exception("claude harness crashed for profile %s", profile.name)
