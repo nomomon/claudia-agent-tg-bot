@@ -5,11 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import os
-import shutil
-import subprocess
 import sys
-from pathlib import Path
 
 from aiogram import Bot
 
@@ -34,33 +30,17 @@ def cmd_serve(_: argparse.Namespace) -> int:
     return 0
 
 
-def _claude_binary() -> str:
-    """The `claude` on PATH, or the copy the Agent SDK ships inside its package.
-
-    The bot's chat harness always uses the bundled copy, so logging in with the same one
-    keeps the token format and CLI version consistent.
-    """
-    found = shutil.which("claude")
-    if found:
-        return found
-    import claude_agent_sdk
-
-    bundled = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
-    if bundled.exists():
-        return str(bundled)
-    raise SystemExit("Claude CLI not found on PATH or in claude_agent_sdk.")
-
-
 def cmd_auth_claude(args: argparse.Namespace) -> int:
-    """Run `claude setup-token` for one profile and store the token against it.
+    """Store a Claude subscription token against one profile.
 
-    The token is kept in the bot's database and only passed to that profile's
-    harness process. The person doing the login must be the subscription owner.
+    Get the token with `claude setup-token` on any machine logged in as the subscription
+    owner. The token is kept in the bot's database and only passed to that profile's
+    harness process.
     """
     settings = _settings()
     store, _ = open_store(settings)
     try:
-        profile = store.load_profile(args.profile)
+        store.load_profile(args.profile)
     except KeyError:
         print(
             f"No profile named '{args.profile}' in {settings.editable_config_path}.",
@@ -68,19 +48,15 @@ def cmd_auth_claude(args: argparse.Namespace) -> int:
         )
         return 1
 
-    config_dir = settings.claude_config_root / profile.name
-    config_dir.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
-
-    print(f"Log in as the owner of the '{profile.name}' subscription. Follow the prompts.\n")
-    subprocess.run([_claude_binary(), "setup-token"], env=env, check=False)
-
-    token = getpass.getpass("Paste the token printed above (input hidden): ").strip()
-    if not token:
-        print("No token given. Nothing stored.", file=sys.stderr)
+    raw = args.token if args.token is not None else getpass.getpass("Token (input hidden): ")
+    # Pasted tokens often pick up spaces or line breaks. A token never contains whitespace.
+    token = "".join(raw.split())
+    if not token.startswith("sk-ant-"):
+        print("That does not look like a Claude token (expected it to start with sk-ant-).")
         return 1
-    store.set_auth_token(profile.name, token)
-    print(f"Stored. Profile '{profile.name}' is connected to Claude.")
+
+    store.set_auth_token(args.profile, token)
+    print(f"Stored a {len(token)}-character token for profile '{args.profile}'.")
     return 0
 
 
@@ -128,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth.add_subparsers(dest="harness", required=True)
     claude = auth_sub.add_parser("claude", help="Connect a Claude subscription to a profile")
     claude.add_argument("--profile", required=True, help="Profile name from bot.toml")
+    claude.add_argument("--token", help="Token from `claude setup-token`. Prompts if omitted.")
     claude.set_defaults(func=cmd_auth_claude)
 
     webhook = sub.add_parser("webhook", help="Manage the Telegram webhook")
