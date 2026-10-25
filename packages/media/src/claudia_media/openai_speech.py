@@ -26,7 +26,7 @@ class OpenAISpeech:
         *,
         stt_model: str = "whisper-1",
         tts_model: str = "gpt-4o-mini-tts",
-        tts_voice: str = "alloy",
+        tts_voice: str = "nova",
     ) -> None:
         self._client = client
         self._stt_model = stt_model

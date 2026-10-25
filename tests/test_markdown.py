@@ -24,3 +24,17 @@ def test_code_block_contents_are_not_formatted() -> None:
 
 def test_plain_text_is_escaped() -> None:
     assert to_telegram_html("1 < 2 & 3") == "1 &lt; 2 &amp; 3"
+
+
+def test_voice_caption_is_an_expandable_quote() -> None:
+    from claudia_telegram.webhook import voice_caption
+
+    assert voice_caption("**hi**") == "<blockquote expandable><b>hi</b></blockquote>"
+
+
+def test_long_voice_caption_is_cut_to_fit() -> None:
+    from claudia_telegram.webhook import CAPTION_TEXT_LIMIT, voice_caption
+
+    caption = voice_caption("a" * 5000)
+    assert caption.endswith("…</blockquote>")
+    assert len(caption) < CAPTION_TEXT_LIMIT + 60

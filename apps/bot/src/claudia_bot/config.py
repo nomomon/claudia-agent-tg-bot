@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     webhook_path: str = "/telegram/webhook"
     openai_api_key: SecretStr | None = None
+    # OpenAI TTS voice for spoken replies, e.g. nova, shimmer, coral, alloy.
+    tts_voice: str = "nova"
 
     data_dir: Path = Path("data")
     # Full bot.toml text. Used to create the editable copy in data_dir on first boot.

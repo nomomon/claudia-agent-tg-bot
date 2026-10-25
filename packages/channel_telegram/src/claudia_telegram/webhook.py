@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 CHANNEL = "telegram"
 TELEGRAM_MESSAGE_LIMIT = 4096
+CAPTION_TEXT_LIMIT = 900
 ACTION_REFRESH_SECONDS = 4
 
 _ACTIONS: dict[Activity, ChatAction] = {
@@ -47,10 +48,21 @@ class TelegramSink:
     async def send(self, message: OutboundMessage) -> None:
         await self._stop_pulse()
         if message.audio:
-            voice = BufferedInputFile(message.audio, filename="reply.ogg")
-            await self._bot.send_voice(self._chat_id, voice)
+            # One message: the voice note with the text in an expandable caption.
+            await self._send_voice(message.audio, message.text)
+            return
         for chunk in _chunks(message.text):
             await self._send_formatted(chunk)
+
+    async def _send_voice(self, audio: bytes, text: str) -> None:
+        voice = BufferedInputFile(audio, filename="reply.ogg")
+        try:
+            await self._bot.send_voice(
+                self._chat_id, voice, caption=voice_caption(text), parse_mode="HTML"
+            )
+        except TelegramBadRequest:
+            log.warning("telegram rejected voice caption, sending plain caption")
+            await self._bot.send_voice(self._chat_id, voice, caption=text[:CAPTION_TEXT_LIMIT])
 
     async def _send_formatted(self, markdown: str) -> None:
         """Send as Telegram HTML. If Telegram rejects the markup, send the plain text."""
@@ -147,6 +159,16 @@ async def _to_inbound(bot: Bot, message: Message) -> InboundMessage:
         text=message.text or message.caption,
         attachments=tuple(attachments),
     )
+
+
+def voice_caption(text: str) -> str:
+    """The reply text as an expandable quote. Telegram shows the first lines and folds the rest.
+
+    Captions are capped at 1024 characters, so long replies are cut here. The full text is
+    not lost from the model's side, only from this single message.
+    """
+    shown = text if len(text) <= CAPTION_TEXT_LIMIT else text[:CAPTION_TEXT_LIMIT] + "…"
+    return f"<blockquote expandable>{to_telegram_html(shown)}</blockquote>"
 
 
 def _chunks(text: str) -> list[str]:

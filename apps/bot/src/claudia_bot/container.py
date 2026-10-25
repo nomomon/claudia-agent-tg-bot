@@ -43,7 +43,10 @@ def build_container(settings: Settings) -> Container:
 
     speech = None
     if settings.openai_api_key is not None:
-        speech = OpenAISpeech(AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value()))
+        speech = OpenAISpeech(
+            AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value()),
+            tts_voice=settings.tts_voice,
+        )
 
     harnesses = HarnessRegistry(
         {
