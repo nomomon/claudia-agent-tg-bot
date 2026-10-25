@@ -28,6 +28,10 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "en": "Voice messages are paused: the OpenAI quota has run out. Top up the billing and try again.",
         "ru": "Голосовые сообщения временно недоступны: закончилась квота OpenAI. Пополните баланс и попробуйте снова.",
     },
+    "voice_key_invalid": {
+        "en": "Voice messages are not working: the OpenAI key on this bot is invalid. Ask the admin to fix it.",
+        "ru": "Голосовые сообщения не работают: ключ OpenAI на этом боте недействителен. Попросите администратора его исправить.",
+    },
     "new_session": {
         "en": "Started a new session.",
         "ru": "Начали новый разговор.",

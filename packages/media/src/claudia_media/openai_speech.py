@@ -8,6 +8,8 @@ def _speech_error(exc: APIError) -> UserFacingError | None:
     """Translate known OpenAI failures into message keys. Other errors are re-raised."""
     if getattr(exc, "code", None) == "insufficient_quota":
         return UserFacingError("voice_quota")
+    if getattr(exc, "status_code", None) == 401:
+        return UserFacingError("voice_key_invalid")
     return None
 
 
