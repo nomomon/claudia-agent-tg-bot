@@ -26,6 +26,10 @@ Experiment on the production container, 2026-10-26, Gemini `gemini-2.5-pro-previ
 - Three segments synthesized in parallel. Each takes about 15 seconds to make, and each plays for about 15 to 18 seconds, so generation stays ahead of playback.
 - Each request has a 60-second timeout. A timeout counts as a transient error and is retried.
 
+## Voice notes
+
+Telegram cannot merge voice notes after they are sent, so segments are joined before sending. The first note is one segment (about 15 seconds). Each later note joins three segments (about 50 seconds), so a long reply is a few notes rather than one per 15 seconds. Two notes are synthesized ahead of playback, with at most three requests in flight.
+
 ## Limits
 
 - Two runs per length, one key, one day. Latency will vary.

@@ -30,6 +30,7 @@ RETRIES = 2
 RETRY_DELAY_SECONDS = 1.0
 # A 200-character segment takes about 15s. Longer requests hung past 4 minutes in tests.
 REQUEST_TIMEOUT_SECONDS = 60.0
+MAX_PARALLEL_REQUESTS = 3
 
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 
@@ -39,12 +40,14 @@ class SegmentPlan:
     """Sizes in characters. Roughly 15 characters are spoken per second.
 
     Chosen from docs/voice-segments.md: short segments return in about the length of their
-    audio, and three in parallel keep ahead of playback.
+    audio. The first voice note is one segment, so it comes quickly. Later voice notes join
+    per_bubble segments, so a long reply is a few notes rather than one per segment.
     """
 
     first_chars: int = 200  # about 15 seconds of speech, so the first voice note comes quickly
     rest_chars: int = 250
-    window: int = 3  # how many segments are synthesized ahead of playback
+    per_bubble: int = 3  # segments joined into one voice note, about 50 seconds of speech
+    window: int = 2  # how many voice notes are synthesized ahead of playback
 
 
 def plan_segments(text: str, first_chars: int, rest_chars: int) -> list[str]:
@@ -66,6 +69,17 @@ def plan_segments(text: str, first_chars: int, rest_chars: int) -> list[str]:
     if current:
         segments.append(current)
     return segments
+
+
+def plan_bubbles(text: str, plan: SegmentPlan) -> list[list[str]]:
+    """Group segments into voice notes. The first note is one segment, the rest per_bubble."""
+    segments = plan_segments(text, plan.first_chars, plan.rest_chars)
+    if not segments:
+        return []
+    rest = segments[1:]
+    return [segments[:1]] + [
+        rest[i : i + plan.per_bubble] for i in range(0, len(rest), plan.per_bubble)
+    ]
 
 
 def _sample_rate(mime_type: str | None) -> int:
@@ -98,24 +112,25 @@ class GeminiSpeech:
         self._model = model
         self._voice = voice
         self._plan = plan or SegmentPlan()
+        self._slots = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 
     async def stream(self, text: str) -> AsyncGenerator[SpeechPiece, None]:
-        """Yield one SpeechPiece per segment, in order. A failed segment yields an error piece.
+        """Yield one SpeechPiece per voice note, in order. A failed note yields an error piece.
 
-        Closing the iterator cancels any segment still being made, so an interrupted reply
+        Closing the iterator cancels any note still being made, so an interrupted reply
         stops spending speech requests.
         """
-        segments = plan_segments(text, self._plan.first_chars, self._plan.rest_chars)
+        bubbles = plan_bubbles(text, self._plan)
         pending: deque[asyncio.Task[SpeechPiece]] = deque()
         next_index = 0
         try:
-            while next_index < len(segments) and len(pending) < self._plan.window:
-                pending.append(asyncio.create_task(self._segment(segments[next_index])))
+            while next_index < len(bubbles) and len(pending) < self._plan.window:
+                pending.append(asyncio.create_task(self._bubble(bubbles[next_index])))
                 next_index += 1
             while pending:
                 piece = await pending.popleft()
-                if next_index < len(segments):
-                    pending.append(asyncio.create_task(self._segment(segments[next_index])))
+                if next_index < len(bubbles):
+                    pending.append(asyncio.create_task(self._bubble(bubbles[next_index])))
                     next_index += 1
                 yield piece
         finally:
@@ -124,25 +139,38 @@ class GeminiSpeech:
                 with suppress(asyncio.CancelledError, Exception):
                     await task
 
-    async def _segment(self, text: str) -> SpeechPiece:
-        """Make one segment as an Ogg Opus voice note. Retries transient failures."""
+    async def _bubble(self, segments: list[str]) -> SpeechPiece:
+        """Make the segments in parallel and join their audio into one Ogg Opus voice note."""
+        text = " ".join(segments)
+        made = await asyncio.gather(*(self._make(segment) for segment in segments))
+        audio: list[bytes] = []
+        rate = DEFAULT_RATE
+        for result in made:
+            if isinstance(result, str):
+                return SpeechPiece(text=text, error=result)
+            audio.append(result[0])
+            rate = result[1]
+        return SpeechPiece(text=text, audio=await _encode_ogg(b"".join(audio), rate))
+
+    async def _make(self, text: str) -> tuple[bytes, int] | str:
+        """Raw audio for one segment, or the message key for why it failed. Retries transient
+        errors."""
         for attempt in range(RETRIES + 1):
             try:
-                pcm, rate = await self._pcm(text)
-                return SpeechPiece(text=text, audio=await _encode_ogg(pcm, rate))
+                return await self._pcm(text)
             except UserFacingError as exc:
                 # Quota, a bad key and empty audio will not fix themselves on a retry.
-                return SpeechPiece(text=text, error=exc.key)
+                return exc.key
             except errors.APIError as exc:
                 if exc.code < 500:
                     log.warning("speech request refused: %s", exc)
-                    return SpeechPiece(text=text, error="voice_failed")
+                    return "voice_failed"
                 log.warning("speech attempt %d failed: %s", attempt + 1, exc)
             except Exception as exc:
                 log.warning("speech attempt %d failed: %s", attempt + 1, exc)
             if attempt < RETRIES:
                 await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
-        return SpeechPiece(text=text, error="voice_failed")
+        return "voice_failed"
 
     async def _pcm(self, text: str) -> tuple[bytes, int]:
         config = types.GenerateContentConfig(
@@ -154,14 +182,15 @@ class GeminiSpeech:
             ),
         )
         try:
-            response = await asyncio.wait_for(
-                self._client.aio.models.generate_content(
-                    model=self._model,
-                    contents=TONE + text,
-                    config=config,
-                ),
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
+            async with self._slots:
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=self._model,
+                        contents=TONE + text,
+                        config=config,
+                    ),
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
         except errors.APIError as exc:
             mapped = _quota_or_key_error(exc)
             if mapped is not None:

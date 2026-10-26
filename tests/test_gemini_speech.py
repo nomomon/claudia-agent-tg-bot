@@ -9,6 +9,7 @@ from claudia_media.gemini_speech import (
     GeminiSpeech,
     SegmentPlan,
     _sample_rate,
+    plan_bubbles,
     plan_segments,
 )
 from google import genai
@@ -41,6 +42,15 @@ def test_segments_break_at_sentences() -> None:
 def test_short_text_is_one_segment_and_blank_is_none() -> None:
     assert plan_segments("Привет!", 900, 900) == ["Привет!"]
     assert plan_segments("   ", 900, 900) == []
+
+
+def test_first_voice_note_is_one_segment_then_segments_are_grouped() -> None:
+    plan = SegmentPlan(first_chars=20, rest_chars=20, per_bubble=2)
+    text = " ".join(f"Предложение {i}." for i in range(12))
+    bubbles = plan_bubbles(text, plan)
+    assert len(bubbles[0]) == 1
+    assert all(1 <= len(b) <= 2 for b in bubbles[1:])
+    assert sum(len(b) for b in bubbles) == len(plan_segments(text, 20, 20))
 
 
 def test_sample_rate_is_read_from_mime_type() -> None:
@@ -147,3 +157,13 @@ async def test_hung_request_times_out_and_is_reported(monkeypatch: pytest.Monkey
     monkeypatch.setattr(gemini_speech, "RETRY_DELAY_SECONDS", 0)
     pieces = [p async for p in GeminiSpeech(client, plan=SegmentPlan(20, 20, 1)).stream("Привет.")]
     assert [p.error for p in pieces] == ["voice_failed"]
+
+
+@requires_ffmpeg
+async def test_each_voice_note_joins_its_segments() -> None:
+    plan = SegmentPlan(first_chars=20, rest_chars=20, per_bubble=2)
+    text = " ".join(f"Предложение {i}." for i in range(12))
+    speech = GeminiSpeech(_client(_audio_response(SILENCE)), plan=plan)
+    pieces = [p async for p in speech.stream(text)]
+    assert len(pieces) == len(plan_bubbles(text, plan))
+    assert all(p.audio is not None for p in pieces)
