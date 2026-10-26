@@ -2,10 +2,10 @@ import asyncio
 
 from claudia_channels import Orchestrator
 from claudia_core import Attachment, InboundMessage, Principal, Role, SpeechPiece
-from claudia_harness import HarnessRegistry
+from claudia_harness import HarnessRegistry, Outbox, TurnResult
 from claudia_store import SqliteStore
 
-from tests.fakes import FakeHarness, FakeSink, FakeSpeaker, FakeTranscriber
+from tests.fakes import Call, FakeHarness, FakeSink, FakeSpeaker, FakeTranscriber
 
 
 def _orchestrator(
@@ -55,12 +55,22 @@ async def test_each_person_gets_their_own_session(seeded: SqliteStore) -> None:
     assert admin_calls[1].session.harness_session_id == "hs-admin-1"
 
 
-async def test_sister_voice_message_gets_voice_reply(seeded: SqliteStore) -> None:
+async def test_voice_message_gets_a_text_reply_by_default(seeded: SqliteStore) -> None:
     harness, sink = FakeHarness(), FakeSink()
     await _orchestrator(seeded, harness, transcript="what time is it").handle(_voice("222"), sink)
 
     assert harness.calls[0].turn.text == "what time is it"
-    assert sink.audio == [(b"OGG:echo: what time is it", "echo: what time is it")]
+    assert [m.text for m in sink.sent] == ["echo: what time is it"]
+    assert sink.audio == []
+    assert "recording" not in sink.activities
+
+
+async def test_agent_can_answer_with_voice_notes_and_skip_the_text(seeded: SqliteStore) -> None:
+    sink = FakeSink()
+    await _orchestrator(seeded, _SpeakingHarness()).handle(_text("222", "hi"), sink)
+
+    assert sink.audio == [(b"OGG:hi", "hi")]
+    assert sink.sent == []
     assert "recording" in sink.activities
     assert sink.activities[-1] == "idle"
 
@@ -157,7 +167,7 @@ async def test_admin_errors_stay_english(seeded: SqliteStore) -> None:
     assert sink.sent[-1].text.startswith("Claude has hit its usage limit")
 
 
-async def test_voice_quota_still_delivers_the_text_reply(seeded: SqliteStore) -> None:
+async def test_voice_quota_falls_back_to_the_text_reply(seeded: SqliteStore) -> None:
 
     class QuotaSpeaker:
         async def stream(self, text: str):
@@ -165,15 +175,35 @@ async def test_voice_quota_still_delivers_the_text_reply(seeded: SqliteStore) ->
 
     orchestrator = Orchestrator(
         repo=seeded,
-        harnesses=HarnessRegistry({"claude": FakeHarness()}),
-        transcriber=FakeTranscriber("hi"),
+        harnesses=HarnessRegistry({"claude": _SpeakingHarness()}),
+        transcriber=None,
         speaker=QuotaSpeaker(),
     )
     sink = FakeSink()
-    await orchestrator.handle(_voice("222"), sink)
+    await orchestrator.handle(_text("222", "hi"), sink)
     texts = [m.text for m in sink.sent]
-    assert any(t.startswith("echo: hi") for t in texts)
     assert any("квота OpenAI" in t for t in texts)
+    assert texts[-1] == "echo: hi"
+    assert sink.audio == []
+
+
+class _SpeakingHarness(FakeHarness):
+    """Asks for voice notes for its text, then answers with the same text."""
+
+    async def run_turn(
+        self,
+        *,
+        profile,
+        session,
+        turn,
+        editor,
+        on_session_id=None,
+        outbox: Outbox | None = None,
+    ) -> TurnResult:
+        self.calls.append(Call(profile=profile, session=session, turn=turn))
+        assert outbox is not None
+        await outbox.send_voice(turn.text)
+        return TurnResult(text=f"echo: {turn.text}", harness_session_id="hs-voice")
 
 
 class _BlockingHarness(FakeHarness):

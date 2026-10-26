@@ -2,6 +2,7 @@
 
 - Self-control (allow_self_control): change its own model, see its profile.
 - Outbox (allow_outbox): send a message or a file to the person while the turn runs.
+- Voice (voice_reply): speak text as voice notes when the person asks for audio.
 
 Each tool is only offered to profiles that have the matching flag. Values are checked here,
 and the actual write or send goes through the ProfileEditor and Outbox the orchestrator gives.
@@ -23,14 +24,19 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 
 SELF_CONTROL_TOOLS = ("set_model", "show_profile")
 OUTBOX_TOOLS = ("send_message", "send_file")
+VOICE_TOOLS = ("send_voice",)
 
 
-def control_tool_names(*, self_control: bool = True, outbox: bool = True) -> list[str]:
+def control_tool_names(
+    *, self_control: bool = True, outbox: bool = True, voice: bool = False
+) -> list[str]:
     names: list[str] = []
     if self_control:
         names.extend(SELF_CONTROL_TOOLS)
     if outbox:
         names.extend(OUTBOX_TOOLS)
+    if voice:
+        names.extend(VOICE_TOOLS)
     return [f"mcp__{CONTROL_SERVER}__{name}" for name in names]
 
 
@@ -67,6 +73,7 @@ def make_control_server(
     *,
     outbox: Outbox | None,
     sendable_roots: list[Path],
+    voice: bool = False,
 ) -> McpSdkServerConfig:
     tools: list[Any] = []
 
@@ -137,6 +144,22 @@ def make_control_server(
             return _text(f"Sent {path.name}.")
 
         tools.extend([send_message, send_file])
+
+    if voice and outbox is not None:
+
+        @tool(
+            "send_voice",
+            "Send text to the person as voice notes. Use this only when they ask for audio or "
+            "a voice message. Otherwise reply in text. Once voice notes are sent, your final "
+            "answer is not sent as text, so the voice text must hold the whole answer.",
+            {"text": str},
+        )
+        async def send_voice(args: dict[str, Any]) -> dict[str, Any]:
+            if await outbox.send_voice(args["text"]):
+                return _text("Sent as voice.")
+            return _text("Could not make the voice notes. Your text answer will still be sent.")
+
+        tools.append(send_voice)
 
     return create_sdk_mcp_server(name=CONTROL_SERVER, version="0.2.0", tools=tools)
 

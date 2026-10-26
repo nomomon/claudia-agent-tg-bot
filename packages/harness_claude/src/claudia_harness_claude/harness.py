@@ -59,6 +59,11 @@ def build_env(
     return env
 
 
+def transcript_dir(profile: Profile, *, config_root: Path) -> Path:
+    """Where Claude Code keeps this profile's session transcripts."""
+    return config_root / profile.name / "projects"
+
+
 def build_options(
     profile: Profile,
     session: Session,
@@ -82,6 +87,9 @@ def build_options(
         allowed_tools=allowed,
         disallowed_tools=[t for t in BUILTIN_TOOLS if t not in profile.tools],
         permission_mode="dontAsk",
+        # Past sessions are readable so the agent can look things up. Only the transcripts
+        # are opened, not the config dir, which also holds the login.
+        add_dirs=[transcript_dir(profile, config_root=config_root)],
         resume=session.harness_session_id,
         mcp_servers=mcp_servers,
     )
@@ -207,14 +215,16 @@ class ClaudeCodeHarness:
 
         inbox = self._config_root / "inbox" / profile.name
         can_send = profile.allow_outbox and outbox is not None
+        can_speak = profile.voice_reply and outbox is not None
         control = None
-        if profile.allow_self_control or can_send:
+        if profile.allow_self_control or can_send or can_speak:
             # The agent may send files from its working folder and from the bot's inbox.
             control = make_control_server(
                 profile,
                 editor,
                 outbox=outbox,
                 sendable_roots=[Path(profile.working_dir), inbox],
+                voice=can_speak,
             )
         options = build_options(
             profile,
@@ -223,7 +233,7 @@ class ClaudeCodeHarness:
             scrub_env=self._scrub_env,
             control=control,
             control_tools=control_tool_names(
-                self_control=profile.allow_self_control, outbox=can_send
+                self_control=profile.allow_self_control, outbox=can_send, voice=can_speak
             ),
         )
         extra, notes = _describe_turn_files(profile, turn, inbox)

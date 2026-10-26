@@ -4,6 +4,7 @@ import asyncio
 import logging
 import mimetypes
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -114,10 +115,10 @@ class Orchestrator:
         command = parse_command(text, from_voice=inbound.from_voice)
         if command is Command.NEW_SESSION:
             self._repo.start_new_session(profile.name)
-            await self._reply(sink, profile, _t(profile, "new_session"), voice=inbound.from_voice)
+            await sink.send(OutboundMessage(text=_t(profile, "new_session")))
             return
         if command is Command.STATUS:
-            await self._reply(sink, profile, _describe(profile), voice=inbound.from_voice)
+            await sink.send(OutboundMessage(text=_describe(profile)))
             return
 
         if not profile.auth_token:
@@ -136,6 +137,7 @@ class Orchestrator:
             # Saved as soon as it is known, so an interrupted turn can still be resumed.
             self._repo.set_harness_session_id(session.id, harness_session_id)
 
+        outbox = _TurnOutbox(sink, lambda spoken: self._speak(sink, profile, spoken))
         await sink.activity("typing")
         started = time.perf_counter()
         try:
@@ -145,7 +147,7 @@ class Orchestrator:
                 turn=turn,
                 editor=self._repo,
                 on_session_id=remember,
-                outbox=_TurnOutbox(sink),
+                outbox=outbox,
             )
         finally:
             await sink.activity("idle")
@@ -158,8 +160,10 @@ class Orchestrator:
             profile.name,
             len(result.text),
         )
-        reply = result.text or _t(profile, "no_reply")
-        await self._reply(sink, profile, reply, voice=inbound.from_voice or profile.voice_reply)
+        if outbox.spoke:
+            # The voice notes already carried the answer, and each one has its text as caption.
+            return
+        await sink.send(OutboundMessage(text=result.text or _t(profile, "no_reply")))
 
     async def _read(self, msg: InboundMessage, profile: Profile) -> _Inbound | None:
         """Turn the message's attachments and text into what the turn needs.
@@ -198,44 +202,53 @@ class Orchestrator:
             log.exception("transcription failed")
             raise UserFacingError("voice_failed") from None
 
-    async def _reply(self, sink: ReplySink, profile: Profile, text: str, *, voice: bool) -> None:
-        """Text goes out at once. When voice is wanted, each voice note follows as it is made."""
-        await sink.send(OutboundMessage(text=text))
-        if not voice or self._speaker is None:
-            return
+    async def _speak(self, sink: ReplySink, profile: Profile, text: str) -> bool:
+        """Send the text as voice notes, each as it is made. False if none could be made."""
+        if self._speaker is None:
+            return False
         await sink.activity("recording")
         started = time.perf_counter()
+        spoke = False
         try:
             # aclosing stops speech still in progress when this turn is cancelled.
             async with aclosing(self._speaker.stream(text)) as pieces:
                 index = 0
                 async for piece in pieces:
-                    index += 1
                     if piece.audio is not None:
+                        index += 1
                         log.info(
                             "timing voice_note=%d at=%.2fs", index, time.perf_counter() - started
                         )
                         await sink.send_audio(piece.audio, piece.text)
+                        spoke = True
                     elif piece.error is not None:
                         await self._say(sink, profile.language, piece.error)
         finally:
             await sink.activity("idle")
+        return spoke
 
     async def _say(self, sink: ReplySink, language: str, key: str) -> None:
         await sink.send(OutboundMessage(text=messages.text(key, language)))
 
 
 class _TurnOutbox:
-    """What a running turn may send before it finishes. Wraps the channel's reply sink."""
+    """What a running turn may send before it finishes. Speaks through the channel's sink."""
 
-    def __init__(self, sink: ReplySink) -> None:
+    def __init__(self, sink: ReplySink, speak: Callable[[str], Awaitable[bool]]) -> None:
         self._sink = sink
+        self._speak = speak
+        self.spoke = False
 
     async def send_text(self, text: str) -> None:
         await self._sink.send_interim(OutboundMessage(text=text))
 
     async def send_file(self, file: OutgoingFile) -> None:
         await self._sink.send_file(file)
+
+    async def send_voice(self, text: str) -> bool:
+        sent = await self._speak(text)
+        self.spoke = self.spoke or sent
+        return sent
 
 
 def _as_turn_file(attachment: Attachment, number: int) -> TurnFile:

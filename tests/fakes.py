@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from claudia_core import OutboundMessage, OutgoingFile, Profile, Session, SpeechPiece
-from claudia_harness import HarnessError, ProfileEditor, Turn, TurnResult
+from claudia_harness import HarnessError, Outbox, ProfileEditor, Turn, TurnResult
 
 
 @dataclass
@@ -54,7 +54,7 @@ class FakeHarness:
         turn: Turn,
         editor: ProfileEditor,
         on_session_id: Callable[[str], None] | None = None,
-        outbox: object | None = None,
+        outbox: Outbox | None = None,
     ) -> TurnResult:
         self.calls.append(Call(profile=profile, session=session, turn=turn))
         if self.fail_with:

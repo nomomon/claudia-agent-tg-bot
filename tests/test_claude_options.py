@@ -99,6 +99,17 @@ def test_control_tools_only_when_a_control_server_is_passed() -> None:
     assert options.mcp_servers["claudia"] is server
 
 
+def test_transcripts_are_readable_but_the_config_dir_is_not() -> None:
+    options = build_options(
+        _profile("sister", tools=("Read", "Grep"), token="t"),
+        _session(),
+        config_root=Path("/data/claude"),
+        scrub_env=SECRETS,
+        control=None,
+    )
+    assert options.add_dirs == [Path("/data/claude/sister/projects")]
+
+
 def test_resume_uses_the_stored_harness_session() -> None:
     options = build_options(
         _profile("admin", tools=("Read",), token="t"),
@@ -119,3 +130,10 @@ def test_api_status_maps_to_a_message_key() -> None:
     assert _error_key(500) == "claude_overloaded"
     assert _error_key(400) == "claude_failed"
     assert _error_key(None) == "claude_failed"
+
+
+def test_send_voice_is_offered_only_when_voice_is_on() -> None:
+    from claudia_harness_claude.control import control_tool_names
+
+    assert "mcp__claudia__send_voice" not in control_tool_names(outbox=True)
+    assert "mcp__claudia__send_voice" in control_tool_names(outbox=False, voice=True)

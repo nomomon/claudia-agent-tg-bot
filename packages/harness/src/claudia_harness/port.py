@@ -55,6 +55,10 @@ class Outbox(Protocol):
 
     async def send_file(self, file: OutgoingFile) -> None: ...
 
+    async def send_voice(self, text: str) -> bool:
+        """Speak the text as voice notes. False if none could be made."""
+        ...
+
 
 class Harness(Protocol):
     kind: str
