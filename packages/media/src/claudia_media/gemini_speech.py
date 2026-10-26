@@ -28,17 +28,23 @@ TONE = "Read aloud in a warm and friendly tone:\n"
 DEFAULT_RATE = 24000
 RETRIES = 2
 RETRY_DELAY_SECONDS = 1.0
+# A 200-character segment takes about 15s. Longer requests hung past 4 minutes in tests.
+REQUEST_TIMEOUT_SECONDS = 60.0
 
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 
 
 @dataclass(frozen=True)
 class SegmentPlan:
-    """Sizes in characters. Roughly 15 characters are spoken per second."""
+    """Sizes in characters. Roughly 15 characters are spoken per second.
 
-    first_chars: int = 900  # about one minute of speech in the first voice note
-    rest_chars: int = 900
-    window: int = 2  # how many segments are synthesized ahead of playback
+    Chosen from docs/voice-segments.md: short segments return in about the length of their
+    audio, and three in parallel keep ahead of playback.
+    """
+
+    first_chars: int = 200  # about 15 seconds of speech, so the first voice note comes quickly
+    rest_chars: int = 250
+    window: int = 3  # how many segments are synthesized ahead of playback
 
 
 def plan_segments(text: str, first_chars: int, rest_chars: int) -> list[str]:
@@ -148,10 +154,13 @@ class GeminiSpeech:
             ),
         )
         try:
-            response = await self._client.aio.models.generate_content(
-                model=self._model,
-                contents=TONE + text,
-                config=config,
+            response = await asyncio.wait_for(
+                self._client.aio.models.generate_content(
+                    model=self._model,
+                    contents=TONE + text,
+                    config=config,
+                ),
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
         except errors.APIError as exc:
             mapped = _quota_or_key_error(exc)

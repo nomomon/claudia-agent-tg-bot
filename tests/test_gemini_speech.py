@@ -1,8 +1,10 @@
+import asyncio
 import shutil
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from claudia_media import gemini_speech
 from claudia_media.gemini_speech import (
     GeminiSpeech,
     SegmentPlan,
@@ -21,6 +23,14 @@ def test_first_segment_is_the_bigger_one() -> None:
     assert len(segments[0]) <= 900 + 40
     assert all(len(s) <= 300 + 40 for s in segments[1:])
     assert " ".join(segments).split() == text.split()
+
+
+def test_default_segments_stay_short() -> None:
+    plan = SegmentPlan()
+    text = " ".join(f"Это предложение номер {i}, оно короткое." for i in range(200))
+    segments = plan_segments(text, plan.first_chars, plan.rest_chars)
+    assert len(segments[0]) <= plan.first_chars + 40
+    assert all(len(s) <= plan.rest_chars + 40 for s in segments[1:])
 
 
 def test_segments_break_at_sentences() -> None:
@@ -125,3 +135,15 @@ async def test_closing_the_stream_stops_pending_work() -> None:
     stream = speech.stream("Раз. Два. Три. Четыре. Пять. Шесть.")
     await anext(stream)
     await stream.aclose()  # must not hang or leak tasks
+
+
+async def test_hung_request_times_out_and_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Hanging:
+        async def generate_content(self, **kwargs: Any) -> Any:
+            await asyncio.sleep(10)
+
+    client = cast(genai.Client, SimpleNamespace(aio=SimpleNamespace(models=_Hanging())))
+    monkeypatch.setattr(gemini_speech, "REQUEST_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(gemini_speech, "RETRY_DELAY_SECONDS", 0)
+    pieces = [p async for p in GeminiSpeech(client, plan=SegmentPlan(20, 20, 1)).stream("Привет.")]
+    assert [p.error for p in pieces] == ["voice_failed"]
