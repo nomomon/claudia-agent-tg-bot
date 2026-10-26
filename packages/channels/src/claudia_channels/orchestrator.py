@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import time
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -135,6 +136,7 @@ class Orchestrator:
             self._repo.set_harness_session_id(session.id, harness_session_id)
 
         await sink.activity("typing")
+        started = time.perf_counter()
         try:
             result = await harness.run_turn(
                 profile=profile,
@@ -149,6 +151,12 @@ class Orchestrator:
 
         if result.harness_session_id:
             remember(result.harness_session_id)
+        log.info(
+            "timing turn=%.2fs profile=%s chars=%d",
+            time.perf_counter() - started,
+            profile.name,
+            len(result.text),
+        )
         reply = result.text or _t(profile, "no_reply")
         await self._reply(sink, profile, reply, voice=inbound.from_voice or profile.voice_reply)
 
@@ -194,8 +202,10 @@ class Orchestrator:
             await sink.send(OutboundMessage(text=text))
             return
         await sink.activity("recording")
+        started = time.perf_counter()
         try:
             audio = await self._speaker.synthesize(text)
+            log.info("timing speech=%.2fs chars=%d", time.perf_counter() - started, len(text))
         except UserFacingError as exc:
             # The text still goes out. Only the voice part is lost, and the reason is said.
             await sink.send(OutboundMessage(text=text))

@@ -2,6 +2,11 @@
 # so no Node toolchain is needed.
 FROM python:3.13-slim
 
+# ffmpeg encodes spoken replies to Ogg Opus for Telegram voice notes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \

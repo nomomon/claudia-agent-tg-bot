@@ -1,9 +1,9 @@
 [project]
 name = "claudia-media"
 version = "0.1.0"
-description = "Speech-to-text and text-to-speech adapters (OpenAI)."
+description = "Speech-to-text (OpenAI Whisper) and text-to-speech (Gemini) adapters."
 requires-python = ">=3.12"
-dependencies = ["claudia-core", "openai>=1.50"]
+dependencies = ["claudia-core", "google-genai>=1.0", "openai>=1.50"]
 
 [tool.uv.sources]
 claudia-core = { workspace = true }

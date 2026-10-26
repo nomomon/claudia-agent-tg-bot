@@ -9,9 +9,10 @@ from aiogram import Bot
 from claudia_channels import Orchestrator
 from claudia_harness import HarnessRegistry
 from claudia_harness_claude import ClaudeCodeHarness
-from claudia_media import OpenAISpeech
+from claudia_media import GeminiSpeech, OpenAITranscriber
 from claudia_store import SqliteStore
 from claudia_telegram import TelegramChannel
+from google import genai
 from openai import AsyncOpenAI
 
 from claudia_bot.config import SECRET_ENV_NAMES, BotConfig, Settings, load_bot_config
@@ -42,11 +43,17 @@ def open_store(settings: Settings) -> tuple[SqliteStore, BotConfig]:
 def build_container(settings: Settings) -> Container:
     store, config = open_store(settings)
 
-    speech = None
+    transcriber = None
     if settings.openai_api_key is not None:
-        speech = OpenAISpeech(
-            AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value()),
-            tts_voice=settings.tts_voice,
+        transcriber = OpenAITranscriber(
+            AsyncOpenAI(api_key=settings.openai_api_key.get_secret_value())
+        )
+
+    speaker = None
+    if settings.gemini_api_key is not None:
+        speaker = GeminiSpeech(
+            genai.Client(api_key=settings.gemini_api_key.get_secret_value()),
+            voice=settings.gemini_tts_voice,
         )
 
     harnesses = HarnessRegistry(
@@ -61,8 +68,8 @@ def build_container(settings: Settings) -> Container:
     orchestrator = Orchestrator(
         repo=store,
         harnesses=harnesses,
-        transcriber=speech,
-        speaker=speech,
+        transcriber=transcriber,
+        speaker=speaker,
         session_idle=timedelta(hours=settings.session_idle_hours),
     )
 

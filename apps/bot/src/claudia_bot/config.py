@@ -19,6 +19,7 @@ SECRET_ENV_NAMES = (
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_WEBHOOK_SECRET",
     "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
     "ANTHROPIC_API_KEY",
 )
 
@@ -37,8 +38,9 @@ class Settings(BaseSettings):
     public_base_url: str = ""
     webhook_path: str = "/telegram/webhook"
     openai_api_key: SecretStr | None = None
-    # OpenAI TTS voice for spoken replies, e.g. shimmer, nova, coral, alloy.
-    tts_voice: str = "shimmer"
+    gemini_api_key: SecretStr | None = None
+    # Gemini TTS voice for spoken replies (the rat bot uses Achernar).
+    gemini_tts_voice: str = "Achernar"
     # After this many hours without a message, the next one starts a fresh session.
     session_idle_hours: float = 6.0
 
