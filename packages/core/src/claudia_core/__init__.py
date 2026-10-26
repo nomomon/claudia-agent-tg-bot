@@ -9,6 +9,7 @@ from claudia_core.models import (
     Profile,
     Role,
     Session,
+    SpeechPiece,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "Profile",
     "Role",
     "Session",
+    "SpeechPiece",
 ]

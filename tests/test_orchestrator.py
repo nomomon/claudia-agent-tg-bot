@@ -1,7 +1,7 @@
 import asyncio
 
 from claudia_channels import Orchestrator
-from claudia_core import Attachment, InboundMessage, Principal, Role
+from claudia_core import Attachment, InboundMessage, Principal, Role, SpeechPiece
 from claudia_harness import HarnessRegistry
 from claudia_store import SqliteStore
 
@@ -60,7 +60,7 @@ async def test_sister_voice_message_gets_voice_reply(seeded: SqliteStore) -> Non
     await _orchestrator(seeded, harness, transcript="what time is it").handle(_voice("222"), sink)
 
     assert harness.calls[0].turn.text == "what time is it"
-    assert any(m.audio == b"OGG:echo: what time is it" for m in sink.sent)
+    assert sink.audio == [(b"OGG:echo: what time is it", "echo: what time is it")]
     assert "recording" in sink.activities
     assert sink.activities[-1] == "idle"
 
@@ -158,11 +158,10 @@ async def test_admin_errors_stay_english(seeded: SqliteStore) -> None:
 
 
 async def test_voice_quota_still_delivers_the_text_reply(seeded: SqliteStore) -> None:
-    from claudia_core import UserFacingError
 
     class QuotaSpeaker:
-        async def synthesize(self, text: str) -> bytes:
-            raise UserFacingError("voice_quota")
+        async def stream(self, text: str):
+            yield SpeechPiece(text=text, error="voice_quota")
 
     orchestrator = Orchestrator(
         repo=seeded,

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import mimetypes
 import time
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -198,22 +199,27 @@ class Orchestrator:
             raise UserFacingError("voice_failed") from None
 
     async def _reply(self, sink: ReplySink, profile: Profile, text: str, *, voice: bool) -> None:
+        """Text goes out at once. When voice is wanted, each voice note follows as it is made."""
+        await sink.send(OutboundMessage(text=text))
         if not voice or self._speaker is None:
-            await sink.send(OutboundMessage(text=text))
             return
         await sink.activity("recording")
         started = time.perf_counter()
         try:
-            audio = await self._speaker.synthesize(text)
-            log.info("timing speech=%.2fs chars=%d", time.perf_counter() - started, len(text))
-        except UserFacingError as exc:
-            # The text still goes out. Only the voice part is lost, and the reason is said.
-            await sink.send(OutboundMessage(text=text))
-            await self._say(sink, profile.language, exc.key)
-            return
+            # aclosing stops speech still in progress when this turn is cancelled.
+            async with aclosing(self._speaker.stream(text)) as pieces:
+                index = 0
+                async for piece in pieces:
+                    index += 1
+                    if piece.audio is not None:
+                        log.info(
+                            "timing voice_note=%d at=%.2fs", index, time.perf_counter() - started
+                        )
+                        await sink.send_audio(piece.audio, piece.text)
+                    elif piece.error is not None:
+                        await self._say(sink, profile.language, piece.error)
         finally:
             await sink.activity("idle")
-        await sink.send(OutboundMessage(text=text, audio=audio))
 
     async def _say(self, sink: ReplySink, language: str, key: str) -> None:
         await sink.send(OutboundMessage(text=messages.text(key, language)))

@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import Literal, Protocol
 
-from claudia_core import OutboundMessage, OutgoingFile, Principal, Profile, Session
+from claudia_core import (
+    OutboundMessage,
+    OutgoingFile,
+    Principal,
+    Profile,
+    Session,
+    SpeechPiece,
+)
 from claudia_harness import ProfileEditor
 
 Activity = Literal["typing", "recording", "idle"]
@@ -24,13 +32,19 @@ class ReplySink(Protocol):
 
     async def send_file(self, file: OutgoingFile) -> None: ...
 
+    async def send_audio(self, audio: bytes, caption: str) -> None:
+        """Send one voice note with the text it speaks as caption. Keeps recording going."""
+        ...
+
 
 class Transcriber(Protocol):
     async def transcribe(self, audio: bytes, mime_type: str) -> str: ...
 
 
 class Speaker(Protocol):
-    async def synthesize(self, text: str) -> bytes: ...
+    def stream(self, text: str) -> AsyncGenerator[SpeechPiece, None]:
+        """Yield the reply as voice segments, in order, as each one is ready."""
+        ...
 
 
 class Repository(ProfileEditor, Protocol):

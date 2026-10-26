@@ -55,12 +55,18 @@ class TelegramSink:
 
     async def send(self, message: OutboundMessage) -> None:
         await self._stop_pulse()
-        if message.audio:
-            # One message: the voice note with the text in an expandable caption.
-            await self._send_voice(message.audio, message.text)
-            return
         for chunk in _chunks(message.text):
             await self._send_formatted(chunk)
+
+    async def _send_formatted(self, markdown: str) -> None:
+        """Send as Telegram HTML. If Telegram rejects the markup, send the plain text."""
+        try:
+            await self._bot.send_message(
+                self._chat_id, to_telegram_html(markdown), parse_mode="HTML"
+            )
+        except TelegramBadRequest:
+            log.warning("telegram rejected formatted reply, sending plain text")
+            await self._bot.send_message(self._chat_id, markdown)
 
     async def send_interim(self, message: OutboundMessage) -> None:
         for chunk in _chunks(message.text):
@@ -74,25 +80,11 @@ class TelegramSink:
         else:
             await self._bot.send_document(self._chat_id, document, caption=caption)
 
-    async def _send_voice(self, audio: bytes, text: str) -> None:
+    async def send_audio(self, audio: bytes, caption: str) -> None:
         voice = BufferedInputFile(audio, filename="reply.ogg")
-        try:
-            await self._bot.send_voice(
-                self._chat_id, voice, caption=voice_caption(text), parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            log.warning("telegram rejected voice caption, sending plain caption")
-            await self._bot.send_voice(self._chat_id, voice, caption=text[:CAPTION_TEXT_LIMIT])
-
-    async def _send_formatted(self, markdown: str) -> None:
-        """Send as Telegram HTML. If Telegram rejects the markup, send the plain text."""
-        try:
-            await self._bot.send_message(
-                self._chat_id, to_telegram_html(markdown), parse_mode="HTML"
-            )
-        except TelegramBadRequest:
-            log.warning("telegram rejected formatted reply, sending plain text")
-            await self._bot.send_message(self._chat_id, markdown)
+        await self._bot.send_voice(
+            self._chat_id, voice, caption=voice_caption(caption), parse_mode="HTML"
+        )
 
     async def _keep_alive(self, action: ChatAction) -> None:
         while True:
@@ -214,11 +206,7 @@ async def _to_inbound(bot: Bot, message: Message) -> InboundMessage:
 
 
 def voice_caption(text: str) -> str:
-    """The reply text as an expandable quote. Telegram shows the first lines and folds the rest.
-
-    Captions are capped at 1024 characters, so long replies are cut here. The full text is
-    not lost from the model's side, only from this single message.
-    """
+    """The text a voice note speaks, as an expandable quote. Telegram folds the rest away."""
     shown = text if len(text) <= CAPTION_TEXT_LIMIT else text[:CAPTION_TEXT_LIMIT] + "…"
     return f"<blockquote expandable>{to_telegram_html(shown)}</blockquote>"
 

@@ -1,50 +1,65 @@
-"""Gemini text-to-speech, the same model the rat bot uses. Returns Ogg Opus for Telegram.
+"""Gemini text-to-speech, the same model the rat bot uses. Streams Ogg Opus segments.
 
-Long replies are split into chunks, the chunks are synthesized in parallel, and the raw PCM is
-joined in order. One ffmpeg pass then encodes the result. Splitting keeps every request short,
-which avoids the cut-offs we saw with long single requests.
+A reply is cut into segments at sentence boundaries. The first segment can be longer than the
+rest, so the first voice note covers about a minute of speech. Segments are synthesized a few at
+a time, ahead of playback, and yielded in order. Each segment is encoded on its own, so every one
+is a complete voice note.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+from collections import deque
+from collections.abc import AsyncGenerator
+from contextlib import suppress
+from dataclasses import dataclass
 
-from claudia_core import UserFacingError
+from claudia_core import SpeechPiece, UserFacingError
 from google import genai
 from google.genai import errors, types
+
+log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gemini-2.5-pro-preview-tts"
 DEFAULT_VOICE = "Achernar"
 TONE = "Read aloud in a warm and friendly tone:\n"
-CHUNK_CHARS = 700
-MAX_PARALLEL = 4
 DEFAULT_RATE = 24000
+RETRIES = 2
+RETRY_DELAY_SECONDS = 1.0
+
 _SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 
 
-def chunk_text(text: str, size: int = CHUNK_CHARS) -> list[str]:
-    """Split on paragraphs first, then sentences, so each chunk is at most about `size` chars."""
-    pieces: list[str] = []
-    for paragraph in (p.strip() for p in text.split("\n\n")):
-        if not paragraph:
-            continue
-        if len(paragraph) <= size:
-            pieces.append(paragraph)
-        else:
-            pieces.extend(s.strip() for s in _SENTENCE.split(paragraph) if s.strip())
+@dataclass(frozen=True)
+class SegmentPlan:
+    """Sizes in characters. Roughly 15 characters are spoken per second."""
 
-    chunks: list[str] = []
+    first_chars: int = 900  # about one minute of speech in the first voice note
+    rest_chars: int = 900
+    window: int = 2  # how many segments are synthesized ahead of playback
+
+
+def plan_segments(text: str, first_chars: int, rest_chars: int) -> list[str]:
+    """Cut text at sentence boundaries into segments that fit the sizes given."""
+    sentences: list[str] = []
+    for paragraph in (p.strip() for p in text.split("\n\n")):
+        if paragraph:
+            sentences.extend(s.strip() for s in _SENTENCE.split(paragraph) if s.strip())
+
+    segments: list[str] = []
     current = ""
-    for piece in pieces:
-        if current and len(current) + len(piece) + 1 > size:
-            chunks.append(current)
-            current = piece
-        else:
-            current = f"{current} {piece}".strip()
+    limit = first_chars
+    for sentence in sentences:
+        if current and len(current) + len(sentence) + 1 > limit:
+            segments.append(current)
+            current = ""
+            limit = rest_chars
+        current = f"{current} {sentence}".strip()
     if current:
-        chunks.append(current)
-    return chunks
+        segments.append(current)
+    return segments
 
 
 def _sample_rate(mime_type: str | None) -> int:
@@ -56,11 +71,11 @@ def _sample_rate(mime_type: str | None) -> int:
     return DEFAULT_RATE
 
 
-def _speech_error(exc: errors.APIError) -> UserFacingError | None:
+def _quota_or_key_error(exc: errors.APIError) -> str | None:
     if exc.code == 429:
-        return UserFacingError("voice_quota")
+        return "voice_quota"
     if exc.code in (401, 403):
-        return UserFacingError("voice_key_invalid")
+        return "voice_key_invalid"
     return None
 
 
@@ -71,28 +86,59 @@ class GeminiSpeech:
         *,
         model: str = DEFAULT_MODEL,
         voice: str = DEFAULT_VOICE,
+        plan: SegmentPlan | None = None,
     ) -> None:
         self._client = client
         self._model = model
         self._voice = voice
+        self._plan = plan or SegmentPlan()
 
-    async def synthesize(self, text: str) -> bytes:
-        chunks = chunk_text(text)
-        if not chunks:
-            raise UserFacingError("voice_failed")
+    async def stream(self, text: str) -> AsyncGenerator[SpeechPiece, None]:
+        """Yield one SpeechPiece per segment, in order. A failed segment yields an error piece.
 
-        gate = asyncio.Semaphore(MAX_PARALLEL)
+        Closing the iterator cancels any segment still being made, so an interrupted reply
+        stops spending speech requests.
+        """
+        segments = plan_segments(text, self._plan.first_chars, self._plan.rest_chars)
+        pending: deque[asyncio.Task[SpeechPiece]] = deque()
+        next_index = 0
+        try:
+            while next_index < len(segments) and len(pending) < self._plan.window:
+                pending.append(asyncio.create_task(self._segment(segments[next_index])))
+                next_index += 1
+            while pending:
+                piece = await pending.popleft()
+                if next_index < len(segments):
+                    pending.append(asyncio.create_task(self._segment(segments[next_index])))
+                    next_index += 1
+                yield piece
+        finally:
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
 
-        async def one(chunk: str) -> tuple[bytes, int]:
-            async with gate:
-                return await self._pcm(chunk)
+    async def _segment(self, text: str) -> SpeechPiece:
+        """Make one segment as an Ogg Opus voice note. Retries transient failures."""
+        for attempt in range(RETRIES + 1):
+            try:
+                pcm, rate = await self._pcm(text)
+                return SpeechPiece(text=text, audio=await _encode_ogg(pcm, rate))
+            except UserFacingError as exc:
+                # Quota, a bad key and empty audio will not fix themselves on a retry.
+                return SpeechPiece(text=text, error=exc.key)
+            except errors.APIError as exc:
+                if exc.code < 500:
+                    log.warning("speech request refused: %s", exc)
+                    return SpeechPiece(text=text, error="voice_failed")
+                log.warning("speech attempt %d failed: %s", attempt + 1, exc)
+            except Exception as exc:
+                log.warning("speech attempt %d failed: %s", attempt + 1, exc)
+            if attempt < RETRIES:
+                await asyncio.sleep(RETRY_DELAY_SECONDS * (attempt + 1))
+        return SpeechPiece(text=text, error="voice_failed")
 
-        # gather keeps input order, so the audio plays back in the order the text was written.
-        parts = await asyncio.gather(*(one(chunk) for chunk in chunks))
-        pcm = b"".join(data for data, _ in parts)
-        return await _encode_ogg(pcm, parts[0][1])
-
-    async def _pcm(self, chunk: str) -> tuple[bytes, int]:
+    async def _pcm(self, text: str) -> tuple[bytes, int]:
         config = types.GenerateContentConfig(
             response_modalities=["AUDIO"],
             speech_config=types.SpeechConfig(
@@ -104,14 +150,14 @@ class GeminiSpeech:
         try:
             response = await self._client.aio.models.generate_content(
                 model=self._model,
-                contents=TONE + chunk,
+                contents=TONE + text,
                 config=config,
             )
         except errors.APIError as exc:
-            mapped = _speech_error(exc)
-            if mapped is None:
-                raise
-            raise mapped from exc
+            mapped = _quota_or_key_error(exc)
+            if mapped is not None:
+                raise UserFacingError(mapped) from exc
+            raise
 
         candidates = response.candidates or []
         content = candidates[0].content if candidates else None

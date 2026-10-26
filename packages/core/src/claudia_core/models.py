@@ -91,4 +91,12 @@ class InboundMessage:
 @dataclass(frozen=True)
 class OutboundMessage:
     text: str
+
+
+@dataclass(frozen=True)
+class SpeechPiece:
+    """One segment of a spoken reply: either its Ogg Opus audio, or the message key for why not."""
+
+    text: str = ""
     audio: bytes | None = field(default=None, repr=False)
+    error: str | None = None

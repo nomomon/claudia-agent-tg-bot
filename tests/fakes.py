@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from claudia_core import OutboundMessage, OutgoingFile, Profile, Session
+from claudia_core import OutboundMessage, OutgoingFile, Profile, Session, SpeechPiece
 from claudia_harness import HarnessError, ProfileEditor, Turn, TurnResult
 
 
@@ -12,6 +12,7 @@ class FakeSink:
     activities: list[str] = field(default_factory=list)
     sent: list[OutboundMessage] = field(default_factory=list)
     files: list[OutgoingFile] = field(default_factory=list)
+    audio: list[tuple[bytes, str]] = field(default_factory=list)
 
     async def activity(self, kind: str) -> None:
         self.activities.append(kind)
@@ -24,6 +25,9 @@ class FakeSink:
 
     async def send_file(self, file: OutgoingFile) -> None:
         self.files.append(file)
+
+    async def send_audio(self, audio: bytes, caption: str) -> None:
+        self.audio.append((audio, caption))
 
 
 @dataclass
@@ -63,8 +67,8 @@ class FakeHarness:
 
 
 class FakeSpeaker:
-    async def synthesize(self, text: str) -> bytes:
-        return f"OGG:{text}".encode()
+    async def stream(self, text: str):
+        yield SpeechPiece(text=text, audio=f"OGG:{text}".encode())
 
 
 class FakeTranscriber:
