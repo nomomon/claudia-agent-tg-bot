@@ -10,6 +10,7 @@ services:
       TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:?set in Dokploy}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set in Dokploy}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       # First boot only: seeds data/bot.toml. After that, edit the file in the claudia_data volume.
       BOT_CONFIG_TOML: ${BOT_CONFIG_TOML:-}
       BOT_CONFIG_RESEED: ${BOT_CONFIG_RESEED:-false}
