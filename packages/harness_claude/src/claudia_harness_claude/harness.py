@@ -18,7 +18,7 @@ from claude_agent_sdk import (
     query,
 )
 from claudia_core import Profile, Session
-from claudia_harness import HarnessError, Outbox, ProfileEditor, Turn, TurnResult
+from claudia_harness import HarnessError, Messenger, Outbox, ProfileEditor, Turn, TurnResult
 
 from claudia_harness_claude.control import CONTROL_SERVER, control_tool_names, make_control_server
 
@@ -209,6 +209,7 @@ class ClaudeCodeHarness:
         editor: ProfileEditor,
         on_session_id: Callable[[str], None] | None = None,
         outbox: Outbox | None = None,
+        messenger: Messenger | None = None,
     ) -> TurnResult:
         if not profile.auth_token:
             raise HarnessError("not_connected")
@@ -216,8 +217,9 @@ class ClaudeCodeHarness:
         inbox = self._config_root / "inbox" / profile.name
         can_send = profile.allow_outbox and outbox is not None
         can_speak = profile.voice_reply and outbox is not None
+        can_message = bool(profile.message_targets) and messenger is not None
         control = None
-        if profile.allow_self_control or can_send or can_speak:
+        if profile.allow_self_control or can_send or can_speak or can_message:
             # The agent may send files from its working folder and from the bot's inbox.
             control = make_control_server(
                 profile,
@@ -225,6 +227,7 @@ class ClaudeCodeHarness:
                 outbox=outbox,
                 sendable_roots=[Path(profile.working_dir), inbox],
                 voice=can_speak,
+                messenger=messenger if can_message else None,
             )
         options = build_options(
             profile,
@@ -233,7 +236,10 @@ class ClaudeCodeHarness:
             scrub_env=self._scrub_env,
             control=control,
             control_tools=control_tool_names(
-                self_control=profile.allow_self_control, outbox=can_send, voice=can_speak
+                self_control=profile.allow_self_control,
+                outbox=can_send,
+                voice=can_speak,
+                messenger=can_message,
             ),
         )
         extra, notes = _describe_turn_files(profile, turn, inbox)

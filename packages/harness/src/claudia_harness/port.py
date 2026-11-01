@@ -60,6 +60,14 @@ class Outbox(Protocol):
         ...
 
 
+class Messenger(Protocol):
+    """How a running turn hands a message to another profile's own agent, if it is allowed to."""
+
+    async def send_to(self, to_profile: str, text: str) -> str:
+        """Deliver text as a turn for to_profile. Returns a short outcome for the agent to read."""
+        ...
+
+
 class Harness(Protocol):
     kind: str
 
@@ -72,6 +80,7 @@ class Harness(Protocol):
         editor: ProfileEditor,
         on_session_id: Callable[[str], None] | None = None,
         outbox: Outbox | None = None,
+        messenger: Messenger | None = None,
     ) -> TurnResult:
         """Run one user turn. Raise HarnessError for failures the user should see.
 

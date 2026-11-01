@@ -3,6 +3,7 @@
 - Self-control (allow_self_control): change its own model, see its profile.
 - Outbox (allow_outbox): send a message or a file to the person while the turn runs.
 - Voice (voice_reply): speak text as voice notes when the person asks for audio.
+- Messenger (message_targets): hand a message to another profile's own agent, in its own chat.
 
 Each tool is only offered to profiles that have the matching flag. Values are checked here,
 and the actual write or send goes through the ProfileEditor and Outbox the orchestrator gives.
@@ -15,7 +16,7 @@ from typing import Any
 
 from claude_agent_sdk import McpSdkServerConfig, create_sdk_mcp_server, tool
 from claudia_core import OutgoingFile, Profile
-from claudia_harness import Outbox, ProfileEditor
+from claudia_harness import Messenger, Outbox, ProfileEditor
 
 CONTROL_SERVER = "claudia"
 
@@ -25,10 +26,11 @@ MAX_FILE_BYTES = 50 * 1024 * 1024
 SELF_CONTROL_TOOLS = ("set_model", "show_profile")
 OUTBOX_TOOLS = ("send_message", "send_file")
 VOICE_TOOLS = ("send_voice",)
+MESSENGER_TOOLS = ("message_user",)
 
 
 def control_tool_names(
-    *, self_control: bool = True, outbox: bool = True, voice: bool = False
+    *, self_control: bool = True, outbox: bool = True, voice: bool = False, messenger: bool = False
 ) -> list[str]:
     names: list[str] = []
     if self_control:
@@ -37,6 +39,8 @@ def control_tool_names(
         names.extend(OUTBOX_TOOLS)
     if voice:
         names.extend(VOICE_TOOLS)
+    if messenger:
+        names.extend(MESSENGER_TOOLS)
     return [f"mcp__{CONTROL_SERVER}__{name}" for name in names]
 
 
@@ -74,6 +78,7 @@ def make_control_server(
     outbox: Outbox | None,
     sendable_roots: list[Path],
     voice: bool = False,
+    messenger: Messenger | None = None,
 ) -> McpSdkServerConfig:
     tools: list[Any] = []
 
@@ -160,6 +165,25 @@ def make_control_server(
             return _text("Could not make the voice notes. Your text answer will still be sent.")
 
         tools.append(send_voice)
+
+    if profile.message_targets and messenger is not None:
+        targets_desc = ", ".join(profile.message_targets)
+
+        @tool(
+            "message_user",
+            "Send a message to another person's own agent on this bot. It is delivered into "
+            "their own chat and their agent may act on it and reply there, same as a message "
+            f"from them. Allowed targets (by profile name): {targets_desc}.",
+            {"to": str, "text": str},
+        )
+        async def message_user(args: dict[str, Any]) -> dict[str, Any]:
+            to = args["to"]
+            if to not in profile.message_targets:
+                return _text(f"Not allowed. Allowed targets: {targets_desc}.")
+            result = await messenger.send_to(to, args["text"])
+            return _text(result)
+
+        tools.append(message_user)
 
     return create_sdk_mcp_server(name=CONTROL_SERVER, version="0.2.0", tools=tools)
 

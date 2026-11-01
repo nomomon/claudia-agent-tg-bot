@@ -38,6 +38,7 @@ class Profile:
     system_prompt: str | None = None
     language: str = "en"
     allow_outbox: bool = False
+    message_targets: tuple[str, ...] = ()
     auth_token: str | None = field(default=None, repr=False)
 
 

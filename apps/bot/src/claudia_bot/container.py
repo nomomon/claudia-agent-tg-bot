@@ -79,4 +79,5 @@ def build_container(settings: Settings) -> Container:
         orchestrator=orchestrator,
         webhook_secret=settings.telegram_webhook_secret.get_secret_value(),
     )
+    orchestrator.register_sink_factory("telegram", channel)
     return Container(settings=settings, config=config, store=store, bot=bot, channel=channel)

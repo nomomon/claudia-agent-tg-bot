@@ -6,6 +6,7 @@ import mimetypes
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -21,7 +22,11 @@ from claudia_harness import HarnessRegistry, Turn, TurnFile, TurnImage
 
 from claudia_channels import messages
 from claudia_channels.commands import Command, parse_command
-from claudia_channels.port import ReplySink, Repository, Speaker, Transcriber
+from claudia_channels.port import ReplySink, Repository, SinkFactory, Speaker, Transcriber
+
+# Profiles currently in a relay chain for the running asyncio task (and its children).
+# Guards message_user against loops without cancelling a turn's own ancestor.
+_relay_chain: ContextVar[frozenset[str]] = ContextVar("relay_chain", default=frozenset())
 
 log = logging.getLogger(__name__)
 
@@ -57,13 +62,20 @@ class Orchestrator:
         transcriber: Transcriber | None = None,
         speaker: Speaker | None = None,
         session_idle: timedelta = DEFAULT_SESSION_IDLE,
+        sink_factories: dict[str, SinkFactory] | None = None,
     ) -> None:
         self._repo = repo
         self._harnesses = harnesses
         self._transcriber = transcriber
         self._speaker = speaker
         self._session_idle = session_idle
+        self._sink_factories: dict[str, SinkFactory] = dict(sink_factories or {})
         self._turns: dict[str, asyncio.Task[None]] = {}
+
+    def register_sink_factory(self, channel: str, factory: SinkFactory) -> None:
+        """Let the orchestrator reach a profile's own chat on `channel` without an inbound
+        message, so one profile's message_user call can deliver into another profile's chat."""
+        self._sink_factories[channel] = factory
 
     async def handle(self, msg: InboundMessage, sink: ReplySink) -> None:
         principal = self._repo.principal_for_identity(msg.channel, msg.sender_id)
@@ -110,9 +122,26 @@ class Orchestrator:
         inbound = await self._read(msg, profile)
         if inbound is None:
             return
+        await self._run_text_turn(
+            inbound.text or "",
+            profile,
+            sink,
+            images=tuple(inbound.images),
+            files=tuple(inbound.files),
+            from_voice=inbound.from_voice,
+        )
 
-        text = inbound.text or ""
-        command = parse_command(text, from_voice=inbound.from_voice)
+    async def _run_text_turn(
+        self,
+        text: str,
+        profile: Profile,
+        sink: ReplySink,
+        *,
+        images: tuple[TurnImage, ...] = (),
+        files: tuple[TurnFile, ...] = (),
+        from_voice: bool = False,
+    ) -> None:
+        command = parse_command(text, from_voice=from_voice)
         if command is Command.NEW_SESSION:
             self._repo.start_new_session(profile.name)
             await sink.send(OutboundMessage(text=_t(profile, "new_session")))
@@ -131,13 +160,14 @@ class Orchestrator:
         harness = self._harnesses.get(profile.harness)
         session = self._repo.ensure_session(profile.name)
         self._repo.touch_session(session.id)
-        turn = Turn(text=text, images=tuple(inbound.images), files=tuple(inbound.files))
+        turn = Turn(text=text, images=images, files=files)
 
         def remember(harness_session_id: str) -> None:
             # Saved as soon as it is known, so an interrupted turn can still be resumed.
             self._repo.set_harness_session_id(session.id, harness_session_id)
 
         outbox = _TurnOutbox(sink, lambda spoken: self._speak(sink, profile, spoken))
+        messenger = _AgentMessenger(self, profile.name) if profile.message_targets else None
         await sink.activity("typing")
         started = time.perf_counter()
         try:
@@ -148,6 +178,7 @@ class Orchestrator:
                 editor=self._repo,
                 on_session_id=remember,
                 outbox=outbox,
+                messenger=messenger,
             )
         finally:
             await sink.activity("idle")
@@ -164,6 +195,56 @@ class Orchestrator:
             # The voice notes already carried the answer, and each one has its text as caption.
             return
         await sink.send(OutboundMessage(text=result.text or _t(profile, "no_reply")))
+
+    async def _deliver_from_agent(self, from_profile: str, to_profile: str, text: str) -> str:
+        """Run text as a turn for to_profile, delivered through its own channel identity.
+
+        Called from inside from_profile's running turn (the message_user tool). A profile
+        already in the current relay chain is refused outright, rather than cancelled, since
+        cancelling it here would mean cancelling an in-flight ancestor of this very call.
+        """
+        chain = _relay_chain.get()
+        if to_profile == from_profile or to_profile in chain:
+            return "Not delivered: that would create a message loop."
+        try:
+            target = self._repo.load_profile(to_profile)
+        except KeyError:
+            return f"Not delivered: no profile named '{to_profile}'."
+        identity = self._repo.identity_for_profile(to_profile)
+        if identity is None:
+            return f"Not delivered: '{to_profile}' has no channel to reach."
+        channel, external_id = identity
+        factory = self._sink_factories.get(channel)
+        if factory is None:
+            return f"Not delivered: no '{channel}' channel is wired up."
+        sink = factory.sink_for(external_id)
+        sender = self._repo.load_profile(from_profile)
+
+        token = _relay_chain.set(chain | {from_profile})
+        try:
+            await self._replace_running_turn(target.name)
+            task = asyncio.create_task(self._run_relayed(target, sink, sender.name, text))
+            self._turns[target.name] = task
+            await asyncio.wait({task})
+            if self._turns.get(target.name) is task:
+                del self._turns[target.name]
+        finally:
+            _relay_chain.reset(token)
+
+        if task.cancelled():
+            return "Not delivered: interrupted by a newer message to them."
+        if task.exception() is not None:
+            log.error("relayed turn to %s failed", target.name, exc_info=task.exception())
+            return "Not delivered: their agent failed to answer."
+        return "Delivered."
+
+    async def _run_relayed(
+        self, profile: Profile, sink: ReplySink, from_name: str, text: str
+    ) -> None:
+        try:
+            await self._run_text_turn(f"[Message from {from_name}] {text}", profile, sink)
+        except UserFacingError as exc:
+            await self._say(sink, profile.language, exc.key)
 
     async def _read(self, msg: InboundMessage, profile: Profile) -> _Inbound | None:
         """Turn the message's attachments and text into what the turn needs.
@@ -229,6 +310,17 @@ class Orchestrator:
 
     async def _say(self, sink: ReplySink, language: str, key: str) -> None:
         await sink.send(OutboundMessage(text=messages.text(key, language)))
+
+
+class _AgentMessenger:
+    """Lets a running turn hand text to another profile's own agent, via message_user."""
+
+    def __init__(self, orchestrator: Orchestrator, from_profile: str) -> None:
+        self._orchestrator = orchestrator
+        self._from_profile = from_profile
+
+    async def send_to(self, to_profile: str, text: str) -> str:
+        return await self._orchestrator._deliver_from_agent(self._from_profile, to_profile, text)
 
 
 class _TurnOutbox:

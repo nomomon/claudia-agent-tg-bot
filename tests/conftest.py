@@ -34,6 +34,7 @@ def seeded(store: SqliteStore) -> SqliteStore:
                 model="claude-sonnet-5-5",
                 models=("claude-haiku-5-5", "claude-sonnet-5-5"),
                 allow_self_control=True,
+                message_targets=("sister",),
             ),
             Profile(
                 name="sister",

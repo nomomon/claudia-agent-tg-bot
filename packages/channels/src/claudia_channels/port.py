@@ -37,6 +37,16 @@ class ReplySink(Protocol):
         ...
 
 
+class SinkFactory(Protocol):
+    """Builds a ReplySink for a channel identity, outside of any inbound message.
+
+    Lets the orchestrator deliver an agent-to-agent message into another profile's own chat.
+    Implemented per channel.
+    """
+
+    def sink_for(self, external_id: str) -> ReplySink: ...
+
+
 class Transcriber(Protocol):
     async def transcribe(self, audio: bytes, mime_type: str) -> str: ...
 
@@ -55,6 +65,8 @@ class Repository(ProfileEditor, Protocol):
     def profile_for_principal(self, principal_id: str) -> Profile | None: ...
 
     def load_profile(self, profile_name: str) -> Profile: ...
+
+    def identity_for_profile(self, profile_name: str) -> tuple[str, str] | None: ...
 
     def ensure_session(self, profile_name: str) -> Session: ...
 

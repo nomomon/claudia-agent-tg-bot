@@ -139,6 +139,10 @@ class TelegramChannel:
         except Exception:
             log.exception("failed to handle telegram update %s", update.update_id)
 
+    def sink_for(self, external_id: str) -> TelegramSink:
+        """A SinkFactory: a chat id is this channel's external_id, read straight from identities."""
+        return TelegramSink(self._bot, int(external_id))
+
     def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(coro)
         self._tasks.add(task)

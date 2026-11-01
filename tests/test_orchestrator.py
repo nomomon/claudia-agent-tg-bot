@@ -1,7 +1,7 @@
 import asyncio
 
 from claudia_channels import Orchestrator
-from claudia_core import Attachment, InboundMessage, Principal, Role, SpeechPiece
+from claudia_core import Attachment, InboundMessage, Principal, Profile, Role, SpeechPiece
 from claudia_harness import HarnessRegistry, Outbox, TurnResult
 from claudia_store import SqliteStore
 
@@ -199,6 +199,7 @@ class _SpeakingHarness(FakeHarness):
         editor,
         on_session_id=None,
         outbox: Outbox | None = None,
+        messenger=None,
     ) -> TurnResult:
         self.calls.append(Call(profile=profile, session=session, turn=turn))
         assert outbox is not None
@@ -263,6 +264,110 @@ async def test_recent_session_is_kept(seeded: SqliteStore) -> None:
     await orchestrator.handle(_text("222", "two"), FakeSink())
     after = seeded.active_session("sister")
     assert before is not None and after is not None and after.id == before.id
+
+
+class _SinkFactory:
+    """Records every sink it hands out, keyed by the external_id asked for."""
+
+    def __init__(self) -> None:
+        self.sinks: dict[str, FakeSink] = {}
+
+    def sink_for(self, external_id: str) -> FakeSink:
+        return self.sinks.setdefault(external_id, FakeSink())
+
+
+class _RelayHarness(FakeHarness):
+    """When a profile has a messenger, relays the turn text to a fixed target and echoes
+
+    what the relay returned."""
+
+    def __init__(self, target_by_profile: dict[str, str]) -> None:
+        super().__init__()
+        self.target_by_profile = target_by_profile
+
+    async def run_turn(self, *, profile, session, turn, editor, on_session_id=None, outbox=None, messenger=None):  # noqa: E501
+        self.calls.append(Call(profile=profile, session=session, turn=turn, messenger=messenger))
+        result = None
+        target = self.target_by_profile.get(profile.name)
+        if target is not None and messenger is not None:
+            result = await messenger.send_to(target, "ping")
+        self._counter += 1
+        hsid = session.harness_session_id or f"hs-{profile.name}-{self._counter}"
+        if on_session_id is not None:
+            on_session_id(hsid)
+        return TurnResult(text=f"result:{result}", harness_session_id=hsid)
+
+
+async def test_agent_can_relay_a_message_into_another_profiles_chat(seeded: SqliteStore) -> None:
+    harness = _RelayHarness({"admin": "sister"})
+    orchestrator = _orchestrator(seeded, harness)
+    factory = _SinkFactory()
+    orchestrator.register_sink_factory("telegram", factory)
+
+    admin_sink = FakeSink()
+    await orchestrator.handle(_text("111", "tell sister hi"), admin_sink)
+
+    assert admin_sink.sent[-1].text == "result:Delivered."
+    sister_calls = [c for c in harness.calls if c.profile.name == "sister"]
+    assert len(sister_calls) == 1
+    assert sister_calls[0].turn.text == "[Message from admin] ping"
+    assert factory.sinks["222"].sent[-1].text == "result:None"
+
+
+async def test_relay_to_a_profile_not_in_message_targets_is_blocked_by_the_tool_layer(
+    seeded: SqliteStore,
+) -> None:
+    # The orchestrator itself does not enforce message_targets (the control tool does), so a
+    # harness that is handed a messenger can reach any profile with a channel identity.
+    # This test documents that the loop guard, not an allowlist, is the orchestrator's job.
+    harness = _RelayHarness({"admin": "does-not-exist"})
+    orchestrator = _orchestrator(seeded, harness)
+    orchestrator.register_sink_factory("telegram", _SinkFactory())
+
+    sink = FakeSink()
+    await orchestrator.handle(_text("111", "hi"), sink)
+    assert sink.sent[-1].text == "result:Not delivered: no profile named 'does-not-exist'."
+
+
+async def test_relay_loop_is_refused_without_a_deadlock(seeded: SqliteStore) -> None:
+    seeded.sync_config(
+        principals=[
+            Principal(id="admin", name="Admin", role=Role.ADMIN),
+            Principal(id="sister", name="Sister", role=Role.USER),
+        ],
+        identities=[],
+        profiles=[
+            Profile(
+                name="admin",
+                principal_id="admin",
+                harness="claude",
+                working_dir="/repo",
+                message_targets=("sister",),
+            ),
+            Profile(
+                name="sister",
+                principal_id="sister",
+                harness="claude",
+                working_dir="/work/sister",
+                message_targets=("admin",),
+            ),
+        ],
+    )
+
+    harness = _RelayHarness({"admin": "sister", "sister": "admin"})
+    orchestrator = _orchestrator(seeded, harness)
+    factory = _SinkFactory()
+    orchestrator.register_sink_factory("telegram", factory)
+
+    admin_sink = FakeSink()
+    await asyncio.wait_for(orchestrator.handle(_text("111", "start"), admin_sink), timeout=5)
+
+    # admin's relay to sister completes; sister's relay back to admin is refused as a loop,
+    # not cancelled, so neither turn hangs.
+    assert admin_sink.sent[-1].text == "result:Delivered."
+    assert factory.sinks["222"].sent[-1].text == (
+        "result:Not delivered: that would create a message loop."
+    )
 
 
 async def test_document_is_passed_as_a_file(seeded: SqliteStore) -> None:

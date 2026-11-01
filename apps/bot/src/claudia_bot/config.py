@@ -167,8 +167,20 @@ def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
                 system_prompt=entry.get("system_prompt"),
                 language=_language(entry),
                 allow_outbox=bool(entry.get("allow_outbox", False)),
+                message_targets=tuple(entry.get("message_targets", [])),
             )
         )
+
+    names = {p.name for p in profiles}
+    for p in profiles:
+        if p.name in p.message_targets:
+            raise ConfigError(f"profile '{p.name}' cannot have itself as a message_targets entry")
+        unknown = [t for t in p.message_targets if t not in names]
+        if unknown:
+            raise ConfigError(
+                f"profile '{p.name}' has message_targets pointing at unknown profiles: "
+                f"{', '.join(unknown)}"
+            )
 
     return BotConfig(
         principals=tuple(principals),

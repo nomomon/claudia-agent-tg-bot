@@ -51,6 +51,9 @@ MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE profiles ADD COLUMN allow_outbox INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    ALTER TABLE profiles ADD COLUMN message_targets TEXT NOT NULL DEFAULT '[]';
+    """,
 )
 
 
@@ -108,8 +111,8 @@ class SqliteStore:
                     """
                     INSERT INTO profiles (name, principal_id, harness, working_dir, tools,
                         model, models, allow_self_control, voice_reply, system_prompt, language,
-                        allow_outbox)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        allow_outbox, message_targets)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         principal_id = excluded.principal_id,
                         harness = excluded.harness,
@@ -120,7 +123,8 @@ class SqliteStore:
                         voice_reply = excluded.voice_reply,
                         system_prompt = excluded.system_prompt,
                         language = excluded.language,
-                        allow_outbox = excluded.allow_outbox
+                        allow_outbox = excluded.allow_outbox,
+                        message_targets = excluded.message_targets
                     """,
                     (
                         pr.name,
@@ -135,6 +139,7 @@ class SqliteStore:
                         pr.system_prompt,
                         pr.language,
                         int(pr.allow_outbox),
+                        json.dumps(list(pr.message_targets)),
                     ),
                 )
             self._conn.execute("COMMIT")
@@ -171,6 +176,20 @@ class SqliteStore:
         if row is None:
             raise KeyError(profile_name)
         return _profile(row)
+
+    def identity_for_profile(self, profile_name: str) -> tuple[str, str] | None:
+        """A channel identity for the profile's principal, to deliver into their own chat
+        outside of any inbound message. Picks the first one when there are several."""
+        row = self._conn.execute(
+            """
+            SELECT i.channel, i.external_id FROM identities i
+            JOIN profiles p ON p.principal_id = i.principal_id
+            WHERE p.name = ?
+            ORDER BY i.rowid LIMIT 1
+            """,
+            (profile_name,),
+        ).fetchone()
+        return (row["channel"], row["external_id"]) if row else None
 
     # ProfileEditor (used by the harness self-control tools)
 
@@ -271,6 +290,7 @@ def _profile(row: sqlite3.Row) -> Profile:
         system_prompt=row["system_prompt"],
         language=row["language"],
         allow_outbox=bool(row["allow_outbox"]),
+        message_targets=tuple(json.loads(row["message_targets"])),
         auth_token=row["auth_token"],
     )
 

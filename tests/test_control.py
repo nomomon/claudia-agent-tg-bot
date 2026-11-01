@@ -56,3 +56,6 @@ def test_control_tool_names_follow_the_flags() -> None:
         "mcp__claudia__send_message",
         "mcp__claudia__send_file",
     ]
+    assert control_tool_names(self_control=False, outbox=False, messenger=True) == [
+        "mcp__claudia__message_user",
+    ]
