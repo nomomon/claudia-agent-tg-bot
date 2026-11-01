@@ -1,4 +1,4 @@
-from claudia_core.errors import UserFacingError
+from claudia_core.errors import SchedulerError, UserFacingError
 from claudia_core.models import (
     Attachment,
     AttachmentKind,
@@ -8,11 +8,13 @@ from claudia_core.models import (
     Principal,
     Profile,
     Role,
+    ScheduledJob,
     Session,
     SpeechPiece,
 )
 
 __all__ = [
+    "SchedulerError",
     "UserFacingError",
     "Attachment",
     "AttachmentKind",
@@ -22,6 +24,7 @@ __all__ = [
     "Principal",
     "Profile",
     "Role",
+    "ScheduledJob",
     "Session",
     "SpeechPiece",
 ]

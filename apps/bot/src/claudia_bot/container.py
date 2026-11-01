@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from aiogram import Bot
-from claudia_channels import Orchestrator
+from claudia_channels import Orchestrator, SchedulerService
 from claudia_harness import HarnessRegistry
 from claudia_harness_claude import ClaudeCodeHarness
 from claudia_media import GeminiSpeech, OpenAITranscriber
@@ -25,6 +25,7 @@ class Container:
     store: SqliteStore
     bot: Bot
     channel: TelegramChannel
+    orchestrator: Orchestrator
 
 
 def open_store(settings: Settings) -> tuple[SqliteStore, BotConfig]:
@@ -65,12 +66,19 @@ def build_container(settings: Settings) -> Container:
         }
     )
 
+    scheduler = SchedulerService(
+        repo=store,
+        timezone=settings.scheduler_timezone,
+        tick_seconds=settings.scheduler_tick_seconds,
+    )
+
     orchestrator = Orchestrator(
         repo=store,
         harnesses=harnesses,
         transcriber=transcriber,
         speaker=speaker,
         session_idle=timedelta(hours=settings.session_idle_hours),
+        scheduler=scheduler,
     )
 
     bot = Bot(token=settings.telegram_bot_token.get_secret_value())
@@ -80,4 +88,11 @@ def build_container(settings: Settings) -> Container:
         webhook_secret=settings.telegram_webhook_secret.get_secret_value(),
     )
     orchestrator.register_sink_factory("telegram", channel)
-    return Container(settings=settings, config=config, store=store, bot=bot, channel=channel)
+    return Container(
+        settings=settings,
+        config=config,
+        store=store,
+        bot=bot,
+        channel=channel,
+        orchestrator=orchestrator,
+    )

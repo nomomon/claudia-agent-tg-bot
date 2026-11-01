@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from claudia_core import Principal, Profile, Role, Session
+from claudia_core import Principal, Profile, Role, ScheduledJob, Session
 
 # Each entry is one schema version. Append only, never edit a shipped entry.
 MIGRATIONS: tuple[str, ...] = (
@@ -53,6 +53,22 @@ MIGRATIONS: tuple[str, ...] = (
     """,
     """
     ALTER TABLE profiles ADD COLUMN message_targets TEXT NOT NULL DEFAULT '[]';
+    """,
+    """
+    ALTER TABLE profiles ADD COLUMN allow_scheduling INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE scheduled_jobs (
+        id            TEXT PRIMARY KEY,
+        profile_name  TEXT NOT NULL REFERENCES profiles(name),
+        prompt        TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        kind          TEXT NOT NULL CHECK (kind IN ('once', 'cron')),
+        cron          TEXT,
+        next_run_at   TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        last_run_at   TEXT
+    );
+    CREATE INDEX scheduled_jobs_due ON scheduled_jobs(next_run_at);
+    CREATE INDEX scheduled_jobs_profile ON scheduled_jobs(profile_name);
     """,
 )
 
@@ -111,8 +127,8 @@ class SqliteStore:
                     """
                     INSERT INTO profiles (name, principal_id, harness, working_dir, tools,
                         model, models, allow_self_control, voice_reply, system_prompt, language,
-                        allow_outbox, message_targets)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        allow_outbox, message_targets, allow_scheduling)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(name) DO UPDATE SET
                         principal_id = excluded.principal_id,
                         harness = excluded.harness,
@@ -124,7 +140,8 @@ class SqliteStore:
                         system_prompt = excluded.system_prompt,
                         language = excluded.language,
                         allow_outbox = excluded.allow_outbox,
-                        message_targets = excluded.message_targets
+                        message_targets = excluded.message_targets,
+                        allow_scheduling = excluded.allow_scheduling
                     """,
                     (
                         pr.name,
@@ -140,6 +157,7 @@ class SqliteStore:
                         pr.language,
                         int(pr.allow_outbox),
                         json.dumps(list(pr.message_targets)),
+                        int(pr.allow_scheduling),
                     ),
                 )
             self._conn.execute("COMMIT")
@@ -275,6 +293,58 @@ class SqliteStore:
             status="active",
         )
 
+    # Scheduled jobs
+
+    def add_job(self, job: ScheduledJob) -> None:
+        self._conn.execute(
+            "INSERT INTO scheduled_jobs (id, profile_name, prompt, title, kind, cron, "
+            "next_run_at, created_at, last_run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                job.id,
+                job.profile_name,
+                job.prompt,
+                job.title,
+                job.kind,
+                job.cron,
+                job.next_run_at.isoformat(),
+                job.created_at.isoformat(),
+                job.last_run_at.isoformat() if job.last_run_at else None,
+            ),
+        )
+
+    def reschedule_job(self, job_id: str, *, next_run_at: datetime, last_run_at: datetime) -> None:
+        """Move a cron job to its next run. Called before it fires, so a slow or failing
+        run can never cause a double-fire on the next tick."""
+        self._conn.execute(
+            "UPDATE scheduled_jobs SET next_run_at = ?, last_run_at = ? WHERE id = ?",
+            (next_run_at.isoformat(), last_run_at.isoformat(), job_id),
+        )
+
+    def delete_job(self, job_id: str) -> bool:
+        cur = self._conn.execute("DELETE FROM scheduled_jobs WHERE id = ?", (job_id,))
+        return cur.rowcount > 0
+
+    def get_job(self, profile_name: str, job_id: str) -> ScheduledJob | None:
+        row = self._conn.execute(
+            "SELECT * FROM scheduled_jobs WHERE id = ? AND profile_name = ?",
+            (job_id, profile_name),
+        ).fetchone()
+        return _job(row) if row else None
+
+    def jobs_for_profile(self, profile_name: str) -> list[ScheduledJob]:
+        rows = self._conn.execute(
+            "SELECT * FROM scheduled_jobs WHERE profile_name = ? ORDER BY next_run_at",
+            (profile_name,),
+        ).fetchall()
+        return [_job(row) for row in rows]
+
+    def due_jobs(self, now: datetime) -> list[ScheduledJob]:
+        rows = self._conn.execute(
+            "SELECT * FROM scheduled_jobs WHERE next_run_at <= ? ORDER BY next_run_at",
+            (now.isoformat(),),
+        ).fetchall()
+        return [_job(row) for row in rows]
+
 
 def _profile(row: sqlite3.Row) -> Profile:
     return Profile(
@@ -291,7 +361,22 @@ def _profile(row: sqlite3.Row) -> Profile:
         language=row["language"],
         allow_outbox=bool(row["allow_outbox"]),
         message_targets=tuple(json.loads(row["message_targets"])),
+        allow_scheduling=bool(row["allow_scheduling"]),
         auth_token=row["auth_token"],
+    )
+
+
+def _job(row: sqlite3.Row) -> ScheduledJob:
+    return ScheduledJob(
+        id=row["id"],
+        profile_name=row["profile_name"],
+        prompt=row["prompt"],
+        title=row["title"],
+        kind=row["kind"],
+        cron=row["cron"],
+        next_run_at=datetime.fromisoformat(row["next_run_at"]),
+        created_at=datetime.fromisoformat(row["created_at"]),
+        last_run_at=datetime.fromisoformat(row["last_run_at"]) if row["last_run_at"] else None,
     )
 
 

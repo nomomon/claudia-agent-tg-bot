@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 from claudia_channels import Orchestrator
 from claudia_core import Attachment, InboundMessage, Principal, Profile, Role, SpeechPiece
@@ -200,6 +201,7 @@ class _SpeakingHarness(FakeHarness):
         on_session_id=None,
         outbox: Outbox | None = None,
         messenger=None,
+        scheduler=None,
     ) -> TurnResult:
         self.calls.append(Call(profile=profile, session=session, turn=turn))
         assert outbox is not None
@@ -285,7 +287,10 @@ class _RelayHarness(FakeHarness):
         super().__init__()
         self.target_by_profile = target_by_profile
 
-    async def run_turn(self, *, profile, session, turn, editor, on_session_id=None, outbox=None, messenger=None):  # noqa: E501
+    async def run_turn(
+        self, *, profile, session, turn, editor, on_session_id=None, outbox=None,
+        messenger=None, scheduler=None,
+    ):
         self.calls.append(Call(profile=profile, session=session, turn=turn, messenger=messenger))
         result = None
         target = self.target_by_profile.get(profile.name)
@@ -368,6 +373,83 @@ async def test_relay_loop_is_refused_without_a_deadlock(seeded: SqliteStore) -> 
     assert factory.sinks["222"].sent[-1].text == (
         "result:Not delivered: that would create a message loop."
     )
+
+
+async def test_scheduler_is_not_offered_without_allow_scheduling(seeded: SqliteStore) -> None:
+    harness = FakeHarness()
+    await _orchestrator(seeded, harness).handle(_text("111", "hi"), FakeSink())
+    assert harness.calls[0].scheduler is None
+
+
+async def test_scheduled_job_wakes_the_right_profile_via_the_real_tick(
+    seeded: SqliteStore,
+) -> None:
+    seeded.sync_config(
+        principals=[
+            Principal(id="admin", name="Admin", role=Role.ADMIN),
+            Principal(id="sister", name="Sister", role=Role.USER),
+        ],
+        identities=[],
+        profiles=[
+            Profile(
+                name="admin",
+                principal_id="admin",
+                harness="claude",
+                working_dir="/repo",
+                allow_scheduling=True,
+            ),
+            Profile(
+                name="sister",
+                principal_id="sister",
+                harness="claude",
+                working_dir="/work/sister",
+            ),
+        ],
+    )
+
+    class _SchedulingHarness(FakeHarness):
+        """On its first turn, schedules a one-off job for itself."""
+
+        async def run_turn(self, *, profile, session, turn, editor, on_session_id=None,
+                            outbox=None, messenger=None, scheduler=None):
+            self.calls.append(
+                Call(profile=profile, session=session, turn=turn, scheduler=scheduler)
+            )
+            if scheduler is not None and len(self.calls) == 1:
+                at = scheduler.now() + timedelta(hours=1)
+                await scheduler.schedule(
+                    prompt="check on things", title="Checkup", at=at.isoformat()
+                )
+            return TurnResult(text=f"echo: {turn.text}", harness_session_id="hs-1")
+
+    harness = _SchedulingHarness()
+    orchestrator = _orchestrator(seeded, harness)
+    factory = _SinkFactory()
+    orchestrator.register_sink_factory("telegram", factory)
+
+    await orchestrator.handle(_text("111", "remind me"), FakeSink())
+    assert len(harness.calls) == 1
+
+    # Force the just-scheduled job to be due, then let the real tick loop fire it.
+    job = seeded.jobs_for_profile("admin")[0]
+    seeded._conn.execute(
+        "UPDATE scheduled_jobs SET next_run_at = ? WHERE id = ?",
+        (orchestrator.scheduler.now().isoformat(), job.id),
+    )
+
+    orchestrator.scheduler.start(orchestrator)
+    try:
+        for _ in range(200):
+            if len(harness.calls) > 1:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await orchestrator.scheduler.stop()
+
+    assert len(harness.calls) == 2
+    assert harness.calls[1].profile.name == "admin"
+    assert "check on things" in harness.calls[1].turn.text
+    assert factory.sinks["111"].sent[-1].text == "echo: " + harness.calls[1].turn.text
 
 
 async def test_document_is_passed_as_a_file(seeded: SqliteStore) -> None:

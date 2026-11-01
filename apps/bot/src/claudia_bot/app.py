@@ -19,9 +19,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        container.orchestrator.scheduler.start(container.orchestrator)
         try:
             yield
         finally:
+            await container.orchestrator.scheduler.stop()
             await container.bot.session.close()
             container.store.close()
 

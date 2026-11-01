@@ -18,7 +18,15 @@ from claude_agent_sdk import (
     query,
 )
 from claudia_core import Profile, Session
-from claudia_harness import HarnessError, Messenger, Outbox, ProfileEditor, Turn, TurnResult
+from claudia_harness import (
+    HarnessError,
+    Messenger,
+    Outbox,
+    ProfileEditor,
+    Scheduler,
+    Turn,
+    TurnResult,
+)
 
 from claudia_harness_claude.control import CONTROL_SERVER, control_tool_names, make_control_server
 
@@ -210,6 +218,7 @@ class ClaudeCodeHarness:
         on_session_id: Callable[[str], None] | None = None,
         outbox: Outbox | None = None,
         messenger: Messenger | None = None,
+        scheduler: Scheduler | None = None,
     ) -> TurnResult:
         if not profile.auth_token:
             raise HarnessError("not_connected")
@@ -218,8 +227,9 @@ class ClaudeCodeHarness:
         can_send = profile.allow_outbox and outbox is not None
         can_speak = profile.voice_reply and outbox is not None
         can_message = bool(profile.message_targets) and messenger is not None
+        can_schedule = profile.allow_scheduling and scheduler is not None
         control = None
-        if profile.allow_self_control or can_send or can_speak or can_message:
+        if profile.allow_self_control or can_send or can_speak or can_message or can_schedule:
             # The agent may send files from its working folder and from the bot's inbox.
             control = make_control_server(
                 profile,
@@ -228,6 +238,7 @@ class ClaudeCodeHarness:
                 sendable_roots=[Path(profile.working_dir), inbox],
                 voice=can_speak,
                 messenger=messenger if can_message else None,
+                scheduler=scheduler if can_schedule else None,
             )
         options = build_options(
             profile,
@@ -240,6 +251,7 @@ class ClaudeCodeHarness:
                 outbox=can_send,
                 voice=can_speak,
                 messenger=can_message,
+                scheduler=can_schedule,
             ),
         )
         extra, notes = _describe_turn_files(profile, turn, inbox)

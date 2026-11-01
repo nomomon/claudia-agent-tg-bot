@@ -4,6 +4,7 @@
 - Outbox (allow_outbox): send a message or a file to the person while the turn runs.
 - Voice (voice_reply): speak text as voice notes when the person asks for audio.
 - Messenger (message_targets): hand a message to another profile's own agent, in its own chat.
+- Scheduler (allow_scheduling): wake itself up later, once or on a cron schedule.
 
 Each tool is only offered to profiles that have the matching flag. Values are checked here,
 and the actual write or send goes through the ProfileEditor and Outbox the orchestrator gives.
@@ -11,26 +12,41 @@ and the actual write or send goes through the ProfileEditor and Outbox the orche
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import McpSdkServerConfig, create_sdk_mcp_server, tool
-from claudia_core import OutgoingFile, Profile
-from claudia_harness import Messenger, Outbox, ProfileEditor
+from claudia_core import OutgoingFile, Profile, SchedulerError
+from claudia_harness import Messenger, Outbox, ProfileEditor, Scheduler
 
 CONTROL_SERVER = "claudia"
 
 # Telegram accepts bot uploads up to 50 MB.
 MAX_FILE_BYTES = 50 * 1024 * 1024
 
+# How long a get_current_time reading stays valid for schedule_task.
+TIME_CHECK_MAX_AGE_SECONDS = 60
+
 SELF_CONTROL_TOOLS = ("set_model", "show_profile")
 OUTBOX_TOOLS = ("send_message", "send_file")
 VOICE_TOOLS = ("send_voice",)
 MESSENGER_TOOLS = ("message_user",)
+SCHEDULER_TOOLS = (
+    "get_current_time",
+    "schedule_task",
+    "list_scheduled_tasks",
+    "delete_scheduled_task",
+)
 
 
 def control_tool_names(
-    *, self_control: bool = True, outbox: bool = True, voice: bool = False, messenger: bool = False
+    *,
+    self_control: bool = True,
+    outbox: bool = True,
+    voice: bool = False,
+    messenger: bool = False,
+    scheduler: bool = False,
 ) -> list[str]:
     names: list[str] = []
     if self_control:
@@ -41,6 +57,8 @@ def control_tool_names(
         names.extend(VOICE_TOOLS)
     if messenger:
         names.extend(MESSENGER_TOOLS)
+    if scheduler:
+        names.extend(SCHEDULER_TOOLS)
     return [f"mcp__{CONTROL_SERVER}__{name}" for name in names]
 
 
@@ -79,6 +97,7 @@ def make_control_server(
     sendable_roots: list[Path],
     voice: bool = False,
     messenger: Messenger | None = None,
+    scheduler: Scheduler | None = None,
 ) -> McpSdkServerConfig:
     tools: list[Any] = []
 
@@ -185,7 +204,101 @@ def make_control_server(
 
         tools.append(message_user)
 
+    if profile.allow_scheduling and scheduler is not None:
+        last_time_check: datetime | None = None
+
+        @tool(
+            "get_current_time",
+            "Read the current date and time. Call this whenever the exact time matters: before "
+            "scheduling anything, when asked what day or time it is, or to turn a relative "
+            "time ('tomorrow at nine', 'in two hours') into a concrete one. The time in your "
+            "instructions is only a snapshot from when this turn started and goes stale while "
+            f"you work, so never compute a schedule from it alone. schedule_task refuses to run "
+            f"unless this was called within the last {TIME_CHECK_MAX_AGE_SECONDS} seconds.",
+            {},
+        )
+        async def get_current_time(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal last_time_check
+            now = scheduler.now()
+            last_time_check = now
+            return _text(f"{_format_moment(now)}. ISO: {now.isoformat(timespec='seconds')}")
+
+        @tool(
+            "schedule_task",
+            "Schedule yourself to be woken up later to do something. When it fires, you are "
+            "started again in this same chat with a message containing prompt verbatim, plus "
+            "your usual recent memory. Nothing is sent to the person unless you call "
+            "send_message during that run, so write prompt as a note to your future self: what "
+            "to do, and any context you will need. Provide exactly one of 'at' (one-off, "
+            "ISO-8601 local time, e.g. '2026-09-10 09:30') or 'cron' (repeating, standard "
+            "5-field cron 'minute hour day-of-month month day-of-week', e.g. '0 9 * * *' daily "
+            "at 09:00, '*/30 * * * *' every 30 minutes). Call get_current_time first and "
+            "compute the time from what it returns; leave the other one empty.",
+            {"prompt": str, "title": str, "at": str, "cron": str},
+        )
+        async def schedule_task(args: dict[str, Any]) -> dict[str, Any]:
+            stale = last_time_check is None or (
+                scheduler.now() - last_time_check
+            ).total_seconds() > TIME_CHECK_MAX_AGE_SECONDS
+            if stale:
+                return _text(
+                    "Stale clock: call get_current_time first (the reading must be less than "
+                    f"{TIME_CHECK_MAX_AGE_SECONDS} seconds old), recompute the time from what "
+                    "it returns, then call this tool again."
+                )
+            try:
+                job = await scheduler.schedule(
+                    prompt=args["prompt"],
+                    title=args["title"],
+                    at=args.get("at") or None,
+                    cron=args.get("cron") or None,
+                )
+            except SchedulerError as exc:
+                return _text(str(exc))
+            return _text(
+                f'Scheduled task id={job.id} "{job.title}" ({job.schedule_description}). '
+                f"Next run: {job.next_run_at:%Y-%m-%d %H:%M}."
+            )
+
+        @tool(
+            "list_scheduled_tasks",
+            "List your scheduled tasks with their ids, schedules and prompts. Call this before "
+            "deleting one (you need its id), or whenever asked what is scheduled.",
+            {},
+        )
+        async def list_scheduled_tasks(args: dict[str, Any]) -> dict[str, Any]:
+            jobs = await scheduler.list_tasks()
+            if not jobs:
+                return _text("No scheduled tasks.")
+            lines = [
+                f"- id={j.id} | {j.title} | {j.schedule_description} | "
+                f"next: {j.next_run_at:%Y-%m-%d %H:%M} | prompt: {j.prompt}"
+                for j in jobs
+            ]
+            return _text("\n".join(lines))
+
+        @tool(
+            "delete_scheduled_task",
+            "Delete one of your scheduled tasks by id. Use list_scheduled_tasks first to find "
+            "the id.",
+            {"task_id": str},
+        )
+        async def delete_scheduled_task(args: dict[str, Any]) -> dict[str, Any]:
+            task_id = args["task_id"]
+            if not await scheduler.delete(task_id):
+                return _text(f"No scheduled task with id={task_id}.")
+            return _text(f"Deleted scheduled task id={task_id}.")
+
+        tools.extend(
+            [get_current_time, schedule_task, list_scheduled_tasks, delete_scheduled_task]
+        )
+
     return create_sdk_mcp_server(name=CONTROL_SERVER, version="0.2.0", tools=tools)
+
+
+def _format_moment(moment: datetime) -> str:
+    """Render a moment for the model: date, time, weekday and timezone."""
+    return f"{moment:%Y-%m-%d %H:%M %A}, timezone {moment.tzinfo} (UTC{moment:%z})"
 
 
 def _guess_mime(path: Path) -> str:

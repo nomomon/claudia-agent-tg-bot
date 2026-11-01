@@ -6,7 +6,7 @@ Personal agent bot. Telegram webhook in, Claude Code harness out. Each person ge
 
 - `packages/core`: domain types and errors. No I/O.
 - `packages/harness`: harness port. `harness_claude` is the Claude Code adapter.
-- `packages/channels`: channel-neutral orchestrator, commands, and bot messages (`messages.py`, English and Russian).
+- `packages/channels`: channel-neutral orchestrator, commands, bot messages (`messages.py`, English and Russian), and the SQLite-backed cron/one-off task scheduler.
 - `packages/channel_telegram`: Telegram adapter only.
 - `packages/store`: SQLite with numbered migrations. Append, never edit a shipped one.
 - `packages/media`: Whisper transcription and Gemini speech.

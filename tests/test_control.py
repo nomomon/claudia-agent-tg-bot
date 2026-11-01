@@ -59,3 +59,9 @@ def test_control_tool_names_follow_the_flags() -> None:
     assert control_tool_names(self_control=False, outbox=False, messenger=True) == [
         "mcp__claudia__message_user",
     ]
+    assert control_tool_names(self_control=False, outbox=False, scheduler=True) == [
+        "mcp__claudia__get_current_time",
+        "mcp__claudia__schedule_task",
+        "mcp__claudia__list_scheduled_tasks",
+        "mcp__claudia__delete_scheduled_task",
+    ]

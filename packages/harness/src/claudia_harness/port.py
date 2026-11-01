@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
-from claudia_core import OutgoingFile, Profile, Session, UserFacingError
+from claudia_core import OutgoingFile, Profile, ScheduledJob, Session, UserFacingError
 
 
 class HarnessError(UserFacingError):
@@ -68,6 +69,27 @@ class Messenger(Protocol):
         ...
 
 
+class Scheduler(Protocol):
+    """How a running turn schedules its own profile to be woken up later.
+
+    Bound to the calling profile already, so the agent never names a profile here.
+    """
+
+    async def schedule(
+        self, *, prompt: str, title: str, at: str | None = None, cron: str | None = None
+    ) -> ScheduledJob:
+        """Create a one-off (`at`) or repeating (`cron`) job. Raises SchedulerError."""
+        ...
+
+    async def list_tasks(self) -> list[ScheduledJob]: ...
+
+    async def delete(self, job_id: str) -> bool: ...
+
+    def now(self) -> datetime:
+        """Current time in the scheduler's configured timezone."""
+        ...
+
+
 class Harness(Protocol):
     kind: str
 
@@ -81,6 +103,7 @@ class Harness(Protocol):
         on_session_id: Callable[[str], None] | None = None,
         outbox: Outbox | None = None,
         messenger: Messenger | None = None,
+        scheduler: Scheduler | None = None,
     ) -> TurnResult:
         """Run one user turn. Raise HarnessError for failures the user should see.
 

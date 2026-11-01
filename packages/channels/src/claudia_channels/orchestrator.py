@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from claudia_core import (
     Attachment,
@@ -16,6 +16,7 @@ from claudia_core import (
     OutboundMessage,
     OutgoingFile,
     Profile,
+    ScheduledJob,
     UserFacingError,
 )
 from claudia_harness import HarnessRegistry, Turn, TurnFile, TurnImage
@@ -23,10 +24,16 @@ from claudia_harness import HarnessRegistry, Turn, TurnFile, TurnImage
 from claudia_channels import messages
 from claudia_channels.commands import Command, parse_command
 from claudia_channels.port import ReplySink, Repository, SinkFactory, Speaker, Transcriber
+from claudia_channels.scheduler import SchedulerService
 
 # Profiles currently in a relay chain for the running asyncio task (and its children).
 # Guards message_user against loops without cancelling a turn's own ancestor.
 _relay_chain: ContextVar[frozenset[str]] = ContextVar("relay_chain", default=frozenset())
+
+
+class _UnreachableProfile(Exception):
+    """Internal: a profile name could not be resolved to a channel to deliver into."""
+
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +70,7 @@ class Orchestrator:
         speaker: Speaker | None = None,
         session_idle: timedelta = DEFAULT_SESSION_IDLE,
         sink_factories: dict[str, SinkFactory] | None = None,
+        scheduler: SchedulerService | None = None,
     ) -> None:
         self._repo = repo
         self._harnesses = harnesses
@@ -70,7 +78,13 @@ class Orchestrator:
         self._speaker = speaker
         self._session_idle = session_idle
         self._sink_factories: dict[str, SinkFactory] = dict(sink_factories or {})
+        self._scheduler = scheduler if scheduler is not None else SchedulerService(repo=repo)
         self._turns: dict[str, asyncio.Task[None]] = {}
+
+    @property
+    def scheduler(self) -> SchedulerService:
+        """The scheduler backing this orchestrator. Start/stop its tick loop around it."""
+        return self._scheduler
 
     def register_sink_factory(self, channel: str, factory: SinkFactory) -> None:
         """Let the orchestrator reach a profile's own chat on `channel` without an inbound
@@ -168,6 +182,9 @@ class Orchestrator:
 
         outbox = _TurnOutbox(sink, lambda spoken: self._speak(sink, profile, spoken))
         messenger = _AgentMessenger(self, profile.name) if profile.message_targets else None
+        scheduler = (
+            _ProfileScheduler(self._scheduler, profile.name) if profile.allow_scheduling else None
+        )
         await sink.activity("typing")
         started = time.perf_counter()
         try:
@@ -179,6 +196,7 @@ class Orchestrator:
                 on_session_id=remember,
                 outbox=outbox,
                 messenger=messenger,
+                scheduler=scheduler,
             )
         finally:
             await sink.activity("idle")
@@ -196,6 +214,46 @@ class Orchestrator:
             return
         await sink.send(OutboundMessage(text=result.text or _t(profile, "no_reply")))
 
+    def _resolve_profile_sink(self, profile_name: str) -> tuple[Profile, ReplySink]:
+        """Look up a profile and its own channel sink, outside of any inbound message.
+
+        Raises _UnreachableProfile with a reason an agent can read.
+        """
+        try:
+            target = self._repo.load_profile(profile_name)
+        except KeyError:
+            raise _UnreachableProfile(f"no profile named '{profile_name}'") from None
+        identity = self._repo.identity_for_profile(profile_name)
+        if identity is None:
+            raise _UnreachableProfile(f"'{profile_name}' has no channel to reach")
+        channel, external_id = identity
+        factory = self._sink_factories.get(channel)
+        if factory is None:
+            raise _UnreachableProfile(f"no '{channel}' channel is wired up")
+        return target, factory.sink_for(external_id)
+
+    async def _dispatch_profile(
+        self, profile: Profile, sink: ReplySink, text: str
+    ) -> asyncio.Task[None]:
+        """Replace any running turn for profile and run text as a fresh one, delivering to sink.
+
+        Shared by message_user (relaying another profile's text) and the scheduler (waking a
+        profile up for a due job): both just need "run this text for a known profile, right now".
+        """
+        await self._replace_running_turn(profile.name)
+        task = asyncio.create_task(self._run_safely(profile, sink, text))
+        self._turns[profile.name] = task
+        await asyncio.wait({task})
+        if self._turns.get(profile.name) is task:
+            del self._turns[profile.name]
+        return task
+
+    async def _run_safely(self, profile: Profile, sink: ReplySink, text: str) -> None:
+        try:
+            await self._run_text_turn(text, profile, sink)
+        except UserFacingError as exc:
+            await self._say(sink, profile.language, exc.key)
+
     async def _deliver_from_agent(self, from_profile: str, to_profile: str, text: str) -> str:
         """Run text as a turn for to_profile, delivered through its own channel identity.
 
@@ -207,27 +265,15 @@ class Orchestrator:
         if to_profile == from_profile or to_profile in chain:
             return "Not delivered: that would create a message loop."
         try:
-            target = self._repo.load_profile(to_profile)
-        except KeyError:
-            return f"Not delivered: no profile named '{to_profile}'."
-        identity = self._repo.identity_for_profile(to_profile)
-        if identity is None:
-            return f"Not delivered: '{to_profile}' has no channel to reach."
-        channel, external_id = identity
-        factory = self._sink_factories.get(channel)
-        if factory is None:
-            return f"Not delivered: no '{channel}' channel is wired up."
-        sink = factory.sink_for(external_id)
+            target, sink = self._resolve_profile_sink(to_profile)
+        except _UnreachableProfile as exc:
+            return f"Not delivered: {exc}."
         sender = self._repo.load_profile(from_profile)
 
         token = _relay_chain.set(chain | {from_profile})
+        wrapped = f"[Message from {sender.name}] {text}"
         try:
-            await self._replace_running_turn(target.name)
-            task = asyncio.create_task(self._run_relayed(target, sink, sender.name, text))
-            self._turns[target.name] = task
-            await asyncio.wait({task})
-            if self._turns.get(target.name) is task:
-                del self._turns[target.name]
+            task = await self._dispatch_profile(target, sink, wrapped)
         finally:
             _relay_chain.reset(token)
 
@@ -238,13 +284,17 @@ class Orchestrator:
             return "Not delivered: their agent failed to answer."
         return "Delivered."
 
-    async def _run_relayed(
-        self, profile: Profile, sink: ReplySink, from_name: str, text: str
-    ) -> None:
+    async def run_scheduled_text(self, profile_name: str, text: str) -> None:
+        """Wake profile_name's agent for a due scheduled job, delivered into its own chat.
+
+        Satisfies claudia_channels.scheduler.JobRunner.
+        """
         try:
-            await self._run_text_turn(f"[Message from {from_name}] {text}", profile, sink)
-        except UserFacingError as exc:
-            await self._say(sink, profile.language, exc.key)
+            target, sink = self._resolve_profile_sink(profile_name)
+        except _UnreachableProfile as exc:
+            log.warning("scheduled job for %s could not be delivered: %s", profile_name, exc)
+            return
+        await self._dispatch_profile(target, sink, text)
 
     async def _read(self, msg: InboundMessage, profile: Profile) -> _Inbound | None:
         """Turn the message's attachments and text into what the turn needs.
@@ -321,6 +371,30 @@ class _AgentMessenger:
 
     async def send_to(self, to_profile: str, text: str) -> str:
         return await self._orchestrator._deliver_from_agent(self._from_profile, to_profile, text)
+
+
+class _ProfileScheduler:
+    """Binds a profile's name to the shared SchedulerService, for the schedule_task tool."""
+
+    def __init__(self, scheduler: SchedulerService, profile_name: str) -> None:
+        self._scheduler = scheduler
+        self._profile_name = profile_name
+
+    async def schedule(
+        self, *, prompt: str, title: str, at: str | None = None, cron: str | None = None
+    ) -> ScheduledJob:
+        return await self._scheduler.add(
+            profile_name=self._profile_name, prompt=prompt, title=title, at=at, cron=cron
+        )
+
+    async def list_tasks(self) -> list[ScheduledJob]:
+        return self._scheduler.list_for_profile(self._profile_name)
+
+    async def delete(self, job_id: str) -> bool:
+        return self._scheduler.delete(self._profile_name, job_id)
+
+    def now(self) -> datetime:
+        return self._scheduler.now()
 
 
 class _TurnOutbox:

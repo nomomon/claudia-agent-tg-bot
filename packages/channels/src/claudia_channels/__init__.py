@@ -8,6 +8,7 @@ from claudia_channels.port import (
     Speaker,
     Transcriber,
 )
+from claudia_channels.scheduler import SchedulerService
 
 __all__ = [
     "Activity",
@@ -15,6 +16,7 @@ __all__ = [
     "Orchestrator",
     "ReplySink",
     "Repository",
+    "SchedulerService",
     "SinkFactory",
     "Speaker",
     "Transcriber",

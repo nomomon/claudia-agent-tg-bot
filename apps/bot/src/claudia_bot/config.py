@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     gemini_tts_voice: str = "Achernar"
     # After this many hours without a message, the next one starts a fresh session.
     session_idle_hours: float = 6.0
+    # IANA timezone scheduled tasks (schedule_task) are interpreted and fired in.
+    scheduler_timezone: str = "UTC"
+    # How often the scheduler checks for due tasks.
+    scheduler_tick_seconds: float = 20.0
 
     data_dir: Path = Path("data")
     # Full bot.toml text. Used to create the editable copy in data_dir on first boot.
@@ -168,6 +172,7 @@ def parse_bot_config(raw: dict[str, Any]) -> BotConfig:
                 language=_language(entry),
                 allow_outbox=bool(entry.get("allow_outbox", False)),
                 message_targets=tuple(entry.get("message_targets", [])),
+                allow_scheduling=bool(entry.get("allow_scheduling", False)),
             )
         )
 

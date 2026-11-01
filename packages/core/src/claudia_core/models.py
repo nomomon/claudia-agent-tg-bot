@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -39,6 +40,7 @@ class Profile:
     language: str = "en"
     allow_outbox: bool = False
     message_targets: tuple[str, ...] = ()
+    allow_scheduling: bool = False
     auth_token: str | None = field(default=None, repr=False)
 
 
@@ -101,3 +103,28 @@ class SpeechPiece:
     text: str = ""
     audio: bytes | None = field(default=None, repr=False)
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class ScheduledJob:
+    """A task a profile's agent asked to be woken up for, later.
+
+    `kind` is "once" (fires at `next_run_at` then is deleted) or "cron" (reschedules
+    itself after each run from `cron`, a standard 5-field expression).
+    """
+
+    id: str
+    profile_name: str
+    prompt: str
+    title: str
+    kind: Literal["once", "cron"]
+    cron: str | None
+    next_run_at: datetime
+    created_at: datetime
+    last_run_at: datetime | None = None
+
+    @property
+    def schedule_description(self) -> str:
+        if self.kind == "cron":
+            return f"cron '{self.cron}'"
+        return f"once at {self.next_run_at:%Y-%m-%d %H:%M}"

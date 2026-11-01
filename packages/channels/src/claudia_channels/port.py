@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal, Protocol
 
 from claudia_core import (
@@ -9,6 +9,7 @@ from claudia_core import (
     OutgoingFile,
     Principal,
     Profile,
+    ScheduledJob,
     Session,
     SpeechPiece,
 )
@@ -77,3 +78,19 @@ class Repository(ProfileEditor, Protocol):
     def touch_session(self, session_id: int) -> None: ...
 
     def is_idle(self, profile_name: str, idle_after: timedelta) -> bool: ...
+
+    # Scheduled jobs (claudia_channels.scheduler.SchedulerService)
+
+    def add_job(self, job: ScheduledJob) -> None: ...
+
+    def reschedule_job(
+        self, job_id: str, *, next_run_at: datetime, last_run_at: datetime
+    ) -> None: ...
+
+    def delete_job(self, job_id: str) -> bool: ...
+
+    def get_job(self, profile_name: str, job_id: str) -> ScheduledJob | None: ...
+
+    def jobs_for_profile(self, profile_name: str) -> list[ScheduledJob]: ...
+
+    def due_jobs(self, now: datetime) -> list[ScheduledJob]: ...

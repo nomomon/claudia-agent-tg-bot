@@ -1,4 +1,6 @@
-from claudia_core import Principal, Profile, Role
+from datetime import UTC, datetime, timedelta
+
+from claudia_core import Principal, Profile, Role, ScheduledJob
 from claudia_store import SqliteStore
 
 
@@ -62,3 +64,81 @@ def test_migrations_are_idempotent(tmp_path) -> None:
     reopened = SqliteStore(path)
     assert reopened.active_session("nobody") is None
     reopened.close()
+
+
+def _job(profile_name: str, **overrides) -> ScheduledJob:
+    now = datetime.now(UTC)
+    defaults = dict(
+        id="job1",
+        profile_name=profile_name,
+        prompt="do the thing",
+        title="Thing",
+        kind="cron",
+        cron="0 9 * * *",
+        next_run_at=now + timedelta(hours=1),
+        created_at=now,
+        last_run_at=None,
+    )
+    defaults.update(overrides)
+    return ScheduledJob(**defaults)
+
+
+def test_add_and_get_job(seeded: SqliteStore) -> None:
+    seeded.add_job(_job("admin"))
+    job = seeded.get_job("admin", "job1")
+    assert job is not None
+    assert job.prompt == "do the thing"
+    assert job.kind == "cron"
+    assert job.last_run_at is None
+    # Scoped to its own profile.
+    assert seeded.get_job("sister", "job1") is None
+
+
+def test_jobs_for_profile_orders_by_next_run(seeded: SqliteStore) -> None:
+    now = datetime.now(UTC)
+    seeded.add_job(_job("admin", id="later", next_run_at=now + timedelta(hours=2)))
+    seeded.add_job(_job("admin", id="sooner", next_run_at=now + timedelta(hours=1)))
+    assert [j.id for j in seeded.jobs_for_profile("admin")] == ["sooner", "later"]
+
+
+def test_due_jobs_only_returns_jobs_at_or_before_now(seeded: SqliteStore) -> None:
+    now = datetime.now(UTC)
+    seeded.add_job(_job("admin", id="due", next_run_at=now - timedelta(minutes=1)))
+    seeded.add_job(_job("admin", id="future", next_run_at=now + timedelta(hours=1)))
+    assert [j.id for j in seeded.due_jobs(now)] == ["due"]
+
+
+def test_reschedule_job_updates_next_and_last_run(seeded: SqliteStore) -> None:
+    seeded.add_job(_job("admin"))
+    now = datetime.now(UTC)
+    later = now + timedelta(days=1)
+    seeded.reschedule_job("job1", next_run_at=later, last_run_at=now)
+
+    job = seeded.get_job("admin", "job1")
+    assert job is not None
+    assert job.next_run_at == later
+    assert job.last_run_at == now
+
+
+def test_delete_job_is_idempotent(seeded: SqliteStore) -> None:
+    seeded.add_job(_job("admin"))
+    assert seeded.delete_job("job1") is True
+    assert seeded.delete_job("job1") is False
+    assert seeded.get_job("admin", "job1") is None
+
+
+def test_sync_config_carries_allow_scheduling(seeded: SqliteStore) -> None:
+    seeded.sync_config(
+        principals=[Principal(id="admin", name="Admin", role=Role.ADMIN)],
+        identities=[],
+        profiles=[
+            Profile(
+                name="admin",
+                principal_id="admin",
+                harness="claude",
+                working_dir="/repo",
+                allow_scheduling=True,
+            )
+        ],
+    )
+    assert seeded.load_profile("admin").allow_scheduling is True
