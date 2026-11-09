@@ -14,12 +14,14 @@ def _orchestrator(
     harness: FakeHarness,
     *,
     transcript: str | None = None,
+    announce_session_renewal: bool = False,
 ) -> Orchestrator:
     return Orchestrator(
         repo=store,
         harnesses=HarnessRegistry({"claude": harness}),
         transcriber=FakeTranscriber(transcript) if transcript is not None else None,
         speaker=FakeSpeaker(),
+        announce_session_renewal=announce_session_renewal,
     )
 
 
@@ -240,9 +242,27 @@ async def test_newer_message_pauses_the_running_turn(seeded: SqliteStore) -> Non
     assert [m.text for m in second_sink.sent] == ["echo: actually, this one"]
 
 
-async def test_idle_session_is_renewed_with_a_notice(seeded: SqliteStore) -> None:
+async def test_idle_session_is_renewed_quietly_by_default(seeded: SqliteStore) -> None:
     harness = FakeHarness()
     orchestrator = _orchestrator(seeded, harness)
+    await orchestrator.handle(_text("222", "first"), FakeSink())
+    old = seeded.active_session("sister")
+    assert old is not None
+
+    seeded._conn.execute(
+        "UPDATE sessions SET updated_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (old.id,)
+    )
+    sink = FakeSink()
+    await orchestrator.handle(_text("222", "back again"), sink)
+
+    new = seeded.active_session("sister")
+    assert new is not None and new.id != old.id
+    assert [m.text for m in sink.sent] == ["echo: back again"]
+
+
+async def test_idle_session_is_renewed_with_a_notice(seeded: SqliteStore) -> None:
+    harness = FakeHarness()
+    orchestrator = _orchestrator(seeded, harness, announce_session_renewal=True)
     await orchestrator.handle(_text("222", "first"), FakeSink())
     old = seeded.active_session("sister")
     assert old is not None

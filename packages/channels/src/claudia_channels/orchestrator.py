@@ -69,6 +69,7 @@ class Orchestrator:
         transcriber: Transcriber | None = None,
         speaker: Speaker | None = None,
         session_idle: timedelta = DEFAULT_SESSION_IDLE,
+        announce_session_renewal: bool = False,
         sink_factories: dict[str, SinkFactory] | None = None,
         scheduler: SchedulerService | None = None,
     ) -> None:
@@ -77,6 +78,7 @@ class Orchestrator:
         self._transcriber = transcriber
         self._speaker = speaker
         self._session_idle = session_idle
+        self._announce_session_renewal = announce_session_renewal
         self._sink_factories: dict[str, SinkFactory] = dict(sink_factories or {})
         self._scheduler = scheduler if scheduler is not None else SchedulerService(repo=repo)
         self._turns: dict[str, asyncio.Task[None]] = {}
@@ -169,7 +171,8 @@ class Orchestrator:
 
         if self._repo.is_idle(profile.name, self._session_idle):
             self._repo.start_new_session(profile.name)
-            await self._say(sink, profile.language, "session_renewed")
+            if self._announce_session_renewal:
+                await self._say(sink, profile.language, "session_renewed")
 
         harness = self._harnesses.get(profile.harness)
         session = self._repo.ensure_session(profile.name)

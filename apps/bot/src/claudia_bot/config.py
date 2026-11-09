@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     gemini_tts_voice: str = "Achernar"
     # After this many hours without a message, the next one starts a fresh session.
     session_idle_hours: float = 6.0
+    # Tell the person when an idle gap started a fresh session. Off by default.
+    announce_session_renewal: bool = False
     # IANA timezone scheduled tasks (schedule_task) are interpreted and fired in.
     scheduler_timezone: str = "UTC"
     # How often the scheduler checks for due tasks.

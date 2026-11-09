@@ -78,6 +78,7 @@ def build_container(settings: Settings) -> Container:
         transcriber=transcriber,
         speaker=speaker,
         session_idle=timedelta(hours=settings.session_idle_hours),
+        announce_session_renewal=settings.announce_session_renewal,
         scheduler=scheduler,
     )
 
